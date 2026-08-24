@@ -41,6 +41,9 @@ jobs:
       - run: go test -race ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
       - run: go run github.com/zricethezav/gitleaks/v8@v8.29.1 dir --no-banner --redact .
+      - run: go run github.com/goreleaser/goreleaser/v2@v2.17.1 check
+      - run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - run: npx --yes markdownlint-cli2@0.23.2 '**/*.md'
       - run: python3 scripts/validate_distribution.py
 
   live-read-only:

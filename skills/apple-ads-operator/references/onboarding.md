@@ -17,7 +17,7 @@ Start with a read-only Apple role. Enable write permissions only after read tool
 2. Run `ad_accounts_list` and record the correct `adAccountId` and role.
 3. Run `org_get` for the organization returned by Apple.
 4. Run `apps_search` with owned apps enabled.
-5. Run `apps_eligibility` for the target storefronts.
+5. Run `apps_eligibility` for the target storefronts. If Apple does not expose eligibility for the selected account, use the owned result from `apps_get` and its `availableStorefronts` as the conservative availability fallback, and report that eligibility was not independently confirmed.
 
 App Store Connect access and Apple Ads API access are separate. Initial App Store Connect account linking remains a web administration task when Apple does not expose an API operation for it.
 

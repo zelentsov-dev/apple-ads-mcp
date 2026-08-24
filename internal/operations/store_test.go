@@ -71,6 +71,52 @@ func TestReceiptExpiryAndDrift(t *testing.T) {
 	}
 }
 
+func TestReceiptIgnoresUnorderedArrayOrdering(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	store := NewStoreForTest(func() time.Time { return now }, time.Minute)
+	executor := &fakeExecutor{state: map[string]any{
+		"systemStatusReasons": []any{"AD_GROUPS_MISSING", "PAUSED_BY_USER"},
+		"targeting":           map[string]any{"countries": []any{"US", "JP"}},
+	}}
+	verify, _ := appleads.ResourceGet("campaigns", "123")
+	mutation, _ := appleads.ResourceUpdate("campaigns", "123", map[string]any{"status": "PAUSED"})
+	preview, err := store.Preview(context.Background(), executor, "owner", "456", "pause", nil, map[string]any{"status": "PAUSED"}, verify, mutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor.state = map[string]any{
+		"systemStatusReasons": []any{"PAUSED_BY_USER", "AD_GROUPS_MISSING"},
+		"targeting":           map[string]any{"countries": []any{"JP", "US"}},
+	}
+	receipt, err := store.Apply(context.Background(), executor, preview.Receipt)
+	if err != nil || receipt.Status != "applied" || executor.writes != 1 {
+		t.Fatalf("receipt=%+v err=%v writes=%d", receipt, err, executor.writes)
+	}
+}
+
+func TestReceiptRejectsOrderedArrayDrift(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	store := NewStoreForTest(func() time.Time { return now }, time.Minute)
+	executor := &fakeExecutor{state: map[string]any{
+		"creativeOrder": []any{"default", "seasonal"},
+	}}
+	verify, _ := appleads.ResourceGet("campaigns", "123")
+	mutation, _ := appleads.ResourceUpdate("campaigns", "123", map[string]any{"status": "PAUSED"})
+	preview, err := store.Preview(context.Background(), executor, "owner", "456", "pause", nil, map[string]any{"status": "PAUSED"}, verify, mutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor.state = map[string]any{
+		"creativeOrder": []any{"seasonal", "default"},
+	}
+	if _, err := store.Apply(context.Background(), executor, preview.Receipt); err == nil {
+		t.Fatal("expected ordered array drift rejection")
+	}
+	if executor.writes != 0 {
+		t.Fatalf("writes=%d", executor.writes)
+	}
+}
+
 func TestAmbiguousWriteReceipt(t *testing.T) {
 	now := time.Now()
 	store := NewStoreForTest(func() time.Time { return now }, time.Minute)

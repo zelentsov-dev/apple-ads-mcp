@@ -1,14 +1,16 @@
 # Roadmap
 
-## v0.1 — read-only intelligence
+## v0.1 — public foundation
 
-Profiles, ES256 OAuth, account discovery, owned-app search, eligibility, suggestions, insights, reports, recommendations, change history, account health, app opportunities, and campaign audits.
+Profiles, ES256 OAuth, account discovery, owned-app search, eligibility, suggestions, insights, reports, recommendations, change history, account health, app opportunities, and campaign audits are implemented.
 
-The private, opt-in acceptance verifies owned-app discovery, storefront eligibility, and bounded keyword opportunities without placing account-specific evidence in the public repository.
+Receipt-gated create/update flows for campaigns, ad groups, targeting keywords, negative keywords, ads, and App Store creatives are also present. Pause, resume, ad-group bid, and CPA-cap previews are included. Deletion and automatic budget increases stay unavailable.
 
-## v0.2 — campaign management
+Private live acceptance verified read-only intelligence and paused campaign creation through direct API readback without placing account-specific evidence in the public repository.
 
-Receipt-gated campaign, ad-group, targeting keyword, and negative-keyword create/update flows. Pause, resume, ad-group bid, and CPA-cap previews are included. Deletion and automatic budget increases stay unavailable.
+## v0.2 — broader campaign management
+
+Expand typed mutation payloads, improve report selectors, add recommendation preview/apply flows, and verify every supported supply source. Add deletion only after inventory-level revalidation tests cover the complete parent-child resource graph.
 
 ## v0.3 — full App Store Ads coverage
 

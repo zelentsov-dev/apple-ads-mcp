@@ -1,6 +1,7 @@
 package operations
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -9,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -266,12 +268,76 @@ func (s *Store) Verify(ctx context.Context, executor Executor, receipt string) (
 }
 
 func valueHash(value any) (string, error) {
-	data, err := json.Marshal(value)
+	canonical, err := canonicalizeForHash(value, "")
+	if err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(canonical)
 	if err != nil {
 		return "", fmt.Errorf("hash operation state: %w", err)
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func canonicalizeForHash(value any, field string) (any, error) {
+	switch typed := value.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for key, item := range typed {
+			canonical, err := canonicalizeForHash(item, key)
+			if err != nil {
+				return nil, err
+			}
+			result[key] = canonical
+		}
+		return result, nil
+	case []any:
+		result := make([]any, len(typed))
+		items := make([]struct {
+			value any
+			data  []byte
+		}, len(typed))
+		for index, item := range typed {
+			canonical, err := canonicalizeForHash(item, "")
+			if err != nil {
+				return nil, err
+			}
+			result[index] = canonical
+			if !unorderedHashField(field) {
+				continue
+			}
+			data, err := json.Marshal(canonical)
+			if err != nil {
+				return nil, fmt.Errorf("hash operation state: %w", err)
+			}
+			items[index] = struct {
+				value any
+				data  []byte
+			}{value: canonical, data: data}
+		}
+		if !unorderedHashField(field) {
+			return result, nil
+		}
+		sort.SliceStable(items, func(i, j int) bool {
+			return bytes.Compare(items[i].data, items[j].data) < 0
+		})
+		for index, item := range items {
+			result[index] = item.value
+		}
+		return result, nil
+	default:
+		return value, nil
+	}
+}
+
+func unorderedHashField(field string) bool {
+	switch field {
+	case "systemStatusReasons", "countries", "countryOrRegionCodes":
+		return true
+	default:
+		return false
+	}
 }
 
 func randomReceipt() (string, error) {

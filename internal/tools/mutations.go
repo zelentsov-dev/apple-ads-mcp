@@ -40,9 +40,9 @@ type ReceiptInput struct {
 }
 
 type PreviewOutput struct {
-	Summary string                      `json:"summary"`
-	Preview operations.OperationPreview `json:"preview"`
-	Error   *ErrorOutput                `json:"error,omitempty"`
+	Summary string                       `json:"summary"`
+	Preview *operations.OperationPreview `json:"preview,omitempty"`
+	Error   *ErrorOutput                 `json:"error,omitempty"`
 }
 
 type ApplyOutput struct {
@@ -161,7 +161,7 @@ func (s *Service) createPreview(store *operations.Store, resource, name string) 
 		if err := s.ensureAppStoreMutation(ctx, input.AccountInput, resource, "", input.Payload, true); err != nil {
 			return failedPreview(err)
 		}
-		verify, err := appleads.ResourceQuery(resource, map[string]any{"pagination": map[string]any{"offset": 0, "pageSize": MaxItems}})
+		verify, err := appleads.ResourceQuery(resource, createVerificationQuery(resource, input.Payload))
 		if err != nil {
 			return failedPreview(err)
 		}
@@ -175,6 +175,23 @@ func (s *Service) createPreview(store *operations.Store, resource, name string) 
 		}
 		return previewSuccess(preview)
 	}
+}
+
+func createVerificationQuery(resource string, payload map[string]any) map[string]any {
+	request := map[string]any{"pagination": map[string]any{"offset": 0, "pageSize": MaxItems}}
+	var parentField string
+	switch resource {
+	case "adgroups":
+		parentField = "campaignId"
+	case "keywords", "negative-keywords", "ads":
+		parentField = "adGroupId"
+	}
+	if parentField != "" {
+		if parentID := stringField(payload, parentField); parentID != "" {
+			request["filters"] = []any{map[string]any{"field": parentField, "operator": "EQUALS", "value": parentID}}
+		}
+	}
+	return request
 }
 
 func (s *Service) updatePreview(store *operations.Store, resource, name string) func(context.Context, *mcp.CallToolRequest, UpdatePreviewInput) (*mcp.CallToolResult, PreviewOutput, error) {
@@ -605,7 +622,7 @@ func addPreviewTool[In any](server *mcp.Server, item Spec, handler mcp.ToolHandl
 }
 
 func previewSuccess(preview operations.OperationPreview) (*mcp.CallToolResult, PreviewOutput, error) {
-	output := PreviewOutput{Summary: "Preview created; no write has occurred", Preview: preview}
+	output := PreviewOutput{Summary: "Preview created; no write has occurred", Preview: &preview}
 	return textResult(output.Summary, false), output, nil
 }
 

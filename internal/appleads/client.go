@@ -231,8 +231,73 @@ func apiError(status int, data any) error {
 	result := &APIError{HTTPStatus: status, Message: http.StatusText(status), Retryable: retryableStatus(status)}
 	if raw, ok := data.(map[string]any); ok {
 		result.Code = firstString(raw, "code", "errorCode")
-		if result.Code != "" {
-			result.Details = map[string]any{"code": result.Code}
+		var details []any
+		if status >= 400 && status < 500 {
+			if message := firstString(raw, "message"); message != "" {
+				result.Message = message
+			}
+			details = safeErrorDetails(raw["details"])
+		}
+		if result.Code != "" || len(details) > 0 {
+			result.Details = map[string]any{}
+			if result.Code != "" {
+				result.Details["code"] = result.Code
+			}
+			if len(details) > 0 {
+				result.Details["details"] = details
+			}
+		}
+	}
+	return result
+}
+
+func safeErrorDetails(value any) []any {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	if len(items) > 20 {
+		items = items[:20]
+	}
+	result := make([]any, 0, len(items))
+	for _, item := range items {
+		raw, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		detail := map[string]any{}
+		for _, key := range []string{"code", "message"} {
+			if text := firstString(raw, key); text != "" {
+				if len(text) > 1024 {
+					text = text[:1024]
+				}
+				detail[key] = text
+			}
+		}
+		if info, ok := raw["info"].(map[string]any); ok {
+			safeInfo := map[string]string{}
+			for key, value := range info {
+				if len(safeInfo) == 20 {
+					break
+				}
+				text, ok := value.(string)
+				if !ok {
+					continue
+				}
+				if len(key) > 128 {
+					key = key[:128]
+				}
+				if len(text) > 1024 {
+					text = text[:1024]
+				}
+				safeInfo[key] = text
+			}
+			if len(safeInfo) > 0 {
+				detail["info"] = safeInfo
+			}
+		}
+		if len(detail) > 0 {
+			result = append(result, detail)
 		}
 	}
 	return result

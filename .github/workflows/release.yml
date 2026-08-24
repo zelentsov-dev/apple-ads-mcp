@@ -10,6 +10,8 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -19,12 +21,18 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Validate release ref
+        id: version
         shell: bash
         run: |
           [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - run: go test ./...
+      - run: go test -race ./...
       - run: go vet ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+      - run: go run github.com/zricethezav/gitleaks/v8@v8.29.1 dir --no-banner --redact .
+      - run: go run github.com/goreleaser/goreleaser/v2@v2.17.1 check
       - run: python3 scripts/validate_distribution.py
 
   binaries:
@@ -52,8 +60,8 @@ jobs:
       - name: Render Homebrew formula
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          python3 scripts/render_homebrew_formula.py "$VERSION" dist/checksums.txt dist/apple-ads-mcp.rb
+          python3 scripts/render_homebrew_formula.py "${{ needs.verify.outputs.version }}" dist/checksums.txt dist/apple-ads-mcp.rb
+          ruby -c dist/apple-ads-mcp.rb
           gh release upload "$GITHUB_REF_NAME" dist/apple-ads-mcp.rb --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -82,11 +90,26 @@ jobs:
           tags: |
             type=ref,event=tag
             type=semver,pattern={{version}}
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          build-args: VERSION=${{ github.ref_name }}
+          build-args: VERSION=${{ steps.version.outputs.value }}
+          provenance: mode=max
+          sbom: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  registry:
+    needs: [verify, binaries, container]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/registry-publish.yml
+    with:
+      version: ${{ needs.verify.outputs.version }}

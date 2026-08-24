@@ -1,0 +1,56 @@
+name: Publish MCP Registry
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Released semantic version without a v prefix
+        required: true
+        default: "0.1.0"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: mcp-registry-publish
+    env:
+      MCP_PUBLISHER_VERSION: v1.8.1
+      MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate released version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          TAG_NAME="v${RELEASE_VERSION}"
+          TAG_COMMIT="$(git rev-parse --verify "refs/tags/${TAG_NAME}^{commit}")"
+          git merge-base --is-ancestor "$TAG_COMMIT" origin/main
+          gh release view "$TAG_NAME" --json isDraft,tagName \
+            --jq 'select(.isDraft == false and .tagName == "'"$TAG_NAME"'") | .tagName' \
+            | grep --fixed-strings --line-regexp "$TAG_NAME"
+      - name: Install publisher
+        run: |
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" \
+            --output mcp-publisher.tar.gz
+          printf '%s  %s\n' "$MCP_PUBLISHER_SHA256" mcp-publisher.tar.gz | sha256sum --check --strict
+          tar --extract --gzip --file mcp-publisher.tar.gz mcp-publisher
+      - name: Authenticate
+        run: ./mcp-publisher login github-oidc
+      - name: Prepare released version metadata
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          jq --arg version "$RELEASE_VERSION" \
+            '.version = $version | .packages[0].identifier = "ghcr.io/zelentsov-dev/apple-ads-mcp:v" + $version' \
+            server.json > server.release.json
+      - name: Publish
+        run: ./mcp-publisher publish server.release.json

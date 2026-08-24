@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "apple-ads": {
+      "command": "apple-ads-mcp",
+      "args": ["serve", "--stdio"]
+    }
+  }
+}

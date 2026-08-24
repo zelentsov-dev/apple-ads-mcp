@@ -1,0 +1,29 @@
+{
+  "name": "apple-ads-mcp",
+  "version": "0.1.0",
+  "description": "Local-first Apple Ads Platform API tools for campaign research and safe management.",
+  "author": {
+    "name": "Alexey Zelentsov",
+    "url": "https://github.com/zelentsov-dev"
+  },
+  "homepage": "https://github.com/zelentsov-dev/apple-ads-mcp",
+  "repository": "https://github.com/zelentsov-dev/apple-ads-mcp",
+  "license": "MIT",
+  "keywords": ["apple-ads", "app-store", "mcp", "user-acquisition"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Apple Ads MCP",
+    "shortDescription": "Research and safely manage App Store ads.",
+    "longDescription": "Connect local Apple Ads credentials to typed tools for app eligibility, keyword discovery, reports, recommendations, audits, and receipt-gated campaign changes.",
+    "developerName": "Alexey Zelentsov",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "websiteURL": "https://github.com/zelentsov-dev/apple-ads-mcp",
+    "defaultPrompt": [
+      "Check which apps I can advertise and find keyword opportunities.",
+      "Audit my Apple Ads campaigns and recommend safe improvements.",
+      "Preview a campaign change without applying it."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

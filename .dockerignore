@@ -1,0 +1,11 @@
+.git
+.github
+.env
+bin
+dist
+work
+apple-ads-mcp
+apple-ads-mcp.exe
+accounts.json
+*.pem
+*.p8

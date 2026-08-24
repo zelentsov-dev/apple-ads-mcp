@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./...
+      - run: go vet ./...
+      - run: go build -trimpath ./cmd/apple-ads-mcp
+
+  race-and-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -race ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+      - run: go run github.com/zricethezav/gitleaks/v8@v8.29.1 dir --no-banner --redact .
+      - run: python3 scripts/validate_distribution.py
+
+  live-read-only:
+    if: github.event_name == 'workflow_dispatch' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    environment: apple-ads-live-read-only
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Prepare owner-only test key
+        shell: bash
+        run: |
+          umask 077
+          printf '%s' "$APPLE_ADS_PRIVATE_KEY" > "$RUNNER_TEMP/apple-ads-key.p8"
+        env:
+          APPLE_ADS_PRIVATE_KEY: ${{ secrets.APPLE_ADS_PRIVATE_KEY }}
+      - run: go test -tags=live_read_only ./internal/live -run '^(TestReadOnlyAcceptance|TestMCPReadOnlyAcceptance)$' -count=1
+        env:
+          APPLE_ADS_LIVE_READ_ONLY: "1"
+          APPLE_ADS_PROFILE: ${{ secrets.APPLE_ADS_PROFILE }}
+          APPLE_ADS_CLIENT_ID: ${{ secrets.APPLE_ADS_CLIENT_ID }}
+          APPLE_ADS_TEAM_ID: ${{ secrets.APPLE_ADS_TEAM_ID }}
+          APPLE_ADS_KEY_ID: ${{ secrets.APPLE_ADS_KEY_ID }}
+          APPLE_ADS_PRIVATE_KEY_PATH: ${{ runner.temp }}/apple-ads-key.p8
+          APPLE_ADS_AD_ACCOUNT_ID: ${{ secrets.APPLE_ADS_AD_ACCOUNT_ID }}
+          APPLE_ADS_LIVE_ADAM_ID: ${{ secrets.APPLE_ADS_LIVE_ADAM_ID }}
+          APPLE_ADS_LIVE_APP_QUERY: ${{ secrets.APPLE_ADS_LIVE_APP_QUERY }}
+          APPLE_ADS_LIVE_STOREFRONT: ${{ vars.APPLE_ADS_LIVE_STOREFRONT }}
+          APPLE_ADS_ALLOW_WRITES: "false"

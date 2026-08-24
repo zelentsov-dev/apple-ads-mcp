@@ -1,0 +1,30 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.zelentsov-dev/apple-ads-mcp",
+  "title": "Apple Ads MCP",
+  "description": "Local Apple Ads research, reports, and receipt-gated campaign management.",
+  "repository": {
+    "url": "https://github.com/zelentsov-dev/apple-ads-mcp",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/zelentsov-dev/apple-ads-mcp:v0.1.0",
+      "runtimeHint": "docker",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "APPLE_ADS_MCP_CONFIG",
+          "description": "Path to a mounted Apple Ads MCP accounts configuration file.",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

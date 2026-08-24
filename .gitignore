@@ -1,0 +1,12 @@
+.DS_Store
+.env
+.idea/
+.vscode/
+bin/
+/apple-ads-mcp
+/apple-ads-mcp.exe
+coverage.out
+dist/
+accounts.json
+*.pem
+*.p8

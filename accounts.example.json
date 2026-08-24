@@ -1,0 +1,13 @@
+{
+  "profiles": [
+    {
+      "name": "example-profile",
+      "clientId": "SEARCHADS.example-client-id",
+      "teamId": "SEARCHADS.example-team-id",
+      "keyId": "EXAMPLEKEY",
+      "privateKeyPath": "/absolute/path/to/apple-ads-private-key.pem",
+      "defaultAdAccountId": "123456789",
+      "allowWrites": false
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+version: 2
+
+builds:
+  - id: apple-ads-mcp
+    main: ./cmd/apple-ads-mcp
+    binary: apple-ads-mcp
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/zelentsov-dev/apple-ads-mcp/internal/mcpserver.Version={{.Version}}
+
+archives:
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+      - accounts.example.json
+      - .mcp.json
+      - .codex-plugin/plugin.json
+      - skills/apple-ads-operator/**
+
+checksum:
+  name_template: checksums.txt
+
+sboms:
+  - artifacts: archive
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'

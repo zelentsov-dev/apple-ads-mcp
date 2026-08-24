@@ -1,0 +1,12 @@
+interface:
+  display_name: "Apple Ads Operator"
+  short_description: "Research and safely manage Apple Ads campaigns"
+  default_prompt: "Use $apple-ads-operator to analyze my App Store ad account and recommend the next safe action."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "apple-ads"
+      description: "Local Apple Ads Platform API MCP server"
+      transport: "stdio"
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,24 @@
+name: Upstream API Audit
+
+on:
+  schedule:
+    - cron: "17 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - run: go list -m -u github.com/modelcontextprotocol/go-sdk github.com/golang-jwt/jwt/v5
+      - run: curl --fail --silent --show-error --location https://api.github.com/repos/apple/apple-ads-platform-api-java/releases/latest
+      - run: curl --fail --silent --show-error --head https://developer.apple.com/documentation/apple-ads-platform-api
+      - run: python3 scripts/validate_distribution.py

@@ -43,3 +43,18 @@ changelog:
     exclude:
       - '^docs:'
       - '^test:'
+
+release:
+  name_template: "{{ .Tag }}"
+  mode: replace
+  make_latest: true
+  header: |
+    Apple Ads MCP {{ .Tag }} is the first public release of a local-first MCP server for Apple Ads Platform API v1.
+
+    It provides typed research, reporting, auditing, and receipt-gated App Store campaign management tools. The server is read-only by default, keeps credentials local, and never exposes a raw HTTP passthrough.
+
+    Live acceptance verified paused campaign, ad-group, targeting-keyword, and negative-keyword creation through preview, single-use receipt, apply, and direct API readback with no ad spend.
+  footer: |
+    Archives include SHA-256 checksums and SPDX SBOMs. See the README for installation, Apple Ads onboarding, safety controls, and known platform behavior.
+
+    This project is independent and is not affiliated with, endorsed by, or sponsored by Apple Inc.

@@ -108,7 +108,7 @@ func TestAppleErrorAndMalformedJSON(t *testing.T) {
 	t.Run("forbidden", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte(`{"error":{"code":"FORBIDDEN","message":"role missing"}}`))
+			_, _ = w.Write([]byte(`{"error":{"code":"FORBIDDEN","message":"role missing","details":[{"code":"ROLE_REQUIRED","message":"API role missing","info":{"field":"role"}}]}}`))
 		}))
 		defer server.Close()
 		client := testClient(t, server, &fakeTokens{value: "token"})
@@ -116,6 +116,27 @@ func TestAppleErrorAndMalformedJSON(t *testing.T) {
 		var apiErr *APIError
 		if !errors.As(err, &apiErr) || apiErr.HTTPStatus != http.StatusForbidden || apiErr.Code != "FORBIDDEN" {
 			t.Fatalf("error=%#v", err)
+		}
+		if apiErr.Message != "role missing" {
+			t.Fatalf("message=%q", apiErr.Message)
+		}
+		details, ok := apiErr.Details["details"].([]any)
+		if !ok || len(details) != 1 {
+			t.Fatalf("details=%#v", apiErr.Details)
+		}
+	})
+	t.Run("server details redacted", func(t *testing.T) {
+		err := apiError(http.StatusInternalServerError, map[string]any{
+			"code":    "INTERNAL",
+			"message": "sensitive upstream message",
+			"details": []any{map[string]any{"message": "sensitive detail"}},
+		})
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.Message != http.StatusText(http.StatusInternalServerError) {
+			t.Fatalf("error=%#v", err)
+		}
+		if strings.Contains(err.Error(), "sensitive") {
+			t.Fatalf("server details leaked: %v", err)
 		}
 	})
 	t.Run("malformed", func(t *testing.T) {

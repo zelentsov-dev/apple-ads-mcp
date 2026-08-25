@@ -1,7 +1,7 @@
 {
   "apiFamily": "Apple Ads Platform API",
   "apiVersion": "v1",
-  "productVersion": "0.2.1",
+  "productVersion": "0.3.0",
   "legacyV5": false,
   "appleMaps": false,
   "maximumPageSize": 200,
@@ -54,6 +54,13 @@
       "status": "implemented"
     },
     {
+      "area": "optimization-read",
+      "paths": ["local policy + POST /reports/apps/campaigns/query", "POST /reports/apps/adgroups/query", "POST /reports/apps/keywords/query", "POST /recommendations/daily-budgets/query", "POST /recommendations/target-cpas/query"],
+      "classification": "read",
+      "status": "implemented-on-demand",
+      "constraints": ["maximum 20 campaigns per policy", "maximum 100 proposed actions", "no scheduler", "no automatic apply"]
+    },
+    {
       "area": "campaign-management",
       "paths": ["POST /campaigns", "GET /campaigns/{id}", "PUT /campaigns/{id}"],
       "classification": "mutation",
@@ -92,13 +99,28 @@
     },
     {
       "area": "shared-budgets",
-      "paths": ["GET /shared-budgets/{id}", "POST /shared-budgets/query"],
-      "classification": "read",
-      "status": "implemented-read-only"
+      "paths": ["GET /shared-budgets/{id}", "POST /shared-budgets/query", "POST /shared-budgets", "PUT /shared-budgets/{id}", "PUT /campaigns/{id}"],
+      "classification": "mixed",
+      "status": "typed-receipt-gated",
+      "constraints": ["LOC accounts only", "single explicit ad account", "private billing profile stays local", "assignment and unassignment use typed campaign updates"]
+    },
+    {
+      "area": "optimization-apply",
+      "paths": ["PUT /campaigns/{id}", "PUT /adgroups/{id}", "PUT /keywords/{id}"],
+      "classification": "mutation",
+      "status": "composite-receipt-gated",
+      "constraints": ["maximum 20 campaigns", "maximum 100 actions", "full report and inventory drift check", "independent confirmed 4xx may continue", "ambiguous result stops remaining actions", "no rollback or retry"]
+    },
+    {
+      "area": "resource-lifecycle",
+      "paths": ["DELETE /campaigns/{id}", "DELETE /adgroups/{id}", "DELETE /keywords/{id}", "DELETE /negative-keywords/{id}", "DELETE /ads/{id}", "DELETE /creatives/{id}", "DELETE /shared-budgets/{id}"],
+      "classification": "destructive-mutation",
+      "status": "separately-gated-receipt",
+      "constraints": ["expected name or text", "parent campaign must be PAUSED", "bounded cascade inventory hash", "creative reference check", "Default Product Page ads and creatives return not_eligible", "shared budget assignment check", "no retry after timeout"]
     },
     {
       "area": "deferred-mutations",
-      "paths": ["DELETE operations", "POST|PUT /ad-accounts", "POST|PUT /shared-budgets", "budget orders"],
+      "paths": ["POST|PUT /ad-accounts", "delegation mutations", "CONTENT_PROVIDER mutations"],
       "classification": "mutation",
       "status": "not-exposed"
     }

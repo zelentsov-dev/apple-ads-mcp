@@ -51,11 +51,11 @@ release:
   mode: replace
   make_latest: true
   header: |
-    Apple Ads MCP {{ .Tag }} is a maintenance release for the local-first App Store campaign operator built on Apple Ads Platform API v1.
+    Apple Ads MCP {{ .Tag }} adds on-demand optimization and separately gated lifecycle management to the local-first App Store campaign operator built on Apple Ads Platform API v1.
 
-    It fixes specialized ad-group bid and CPA-cap preview serialization, hardens bounded structured diagnostics for Apple API errors, and adds full operator acceptance across read, preview, apply, verify, restoration, and final PAUSED zero-spend checks. The server is read-only by default, keeps credentials local, and never exposes a raw HTTP passthrough.
+    Named learning and active policies produce bounded 28-day baselines and composite plans without a scheduler. Typed LOC shared-budget workflows keep billing PII local. Irreversible lifecycle operations require separate server, profile, session, expected-text, cascade, receipt, and verification gates. The server remains read-only by default and never exposes a raw HTTP passthrough.
 
-    PAUSED live acceptance verifies the complete v0.2 operator against an owner-controlled account without exposing account data in the release. Known upstream errors from phrase/category suggestions and impression share remain visible as structured Apple errors and are not reported as successful responses.
+    Full regression preserves the v0.2.1 read and operator contract. PAUSED live acceptance verifies new v0.3 behavior only against operator-controlled fixtures; mature business campaigns are read-only. Known upstream errors from phrase/category suggestions and impression share remain visible as structured Apple errors and are not reported as successful responses.
   footer: |
     Archives include SHA-256 checksums and SPDX SBOMs. See the README for installation, Apple Ads onboarding, safety controls, and known platform behavior.
 

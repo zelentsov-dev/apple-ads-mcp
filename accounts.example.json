@@ -7,7 +7,8 @@
       "keyId": "EXAMPLEKEY",
       "privateKeyPath": "/absolute/path/to/apple-ads-private-key.pem",
       "defaultAdAccountId": "123456789",
-      "allowWrites": false
+      "allowWrites": false,
+      "allowDeletes": false
     }
   ]
 }

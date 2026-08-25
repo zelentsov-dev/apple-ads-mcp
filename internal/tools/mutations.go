@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -52,6 +53,7 @@ func MutationSpecs() []Spec {
 		{Name: "campaign_daily_budget_preview", Description: "Preview a campaign daily-budget update with typed money.", Class: "mutation_preview"},
 		{Name: "campaign_countries_preview", Description: "Preview replacing campaign country targeting.", Class: "mutation_preview"},
 		{Name: "campaign_schedule_preview", Description: "Preview a campaign start and end schedule update.", Class: "mutation_preview"},
+		{Name: "campaign_bid_strategy_preview", Description: "Preview MANUAL_CPT or eligible App Store Search Results MAX_CONVERSIONS strategy.", Class: "mutation_preview"},
 		{Name: "ad_group_create_preview", Description: "Preview creation of one ad group.", Class: "mutation_preview"},
 		{Name: "ad_group_update_preview", Description: "Preview an ad-group update.", Class: "mutation_preview"},
 		{Name: "ad_group_pause_preview", Description: "Preview pausing one ad group.", Class: "mutation_preview"},
@@ -82,6 +84,18 @@ func MutationSpecs() []Spec {
 		{Name: "daily_budget_recommendation_dismiss_preview", Description: "Preview dismissing one daily-budget recommendation.", Class: "mutation_preview"},
 		{Name: "target_cpa_recommendation_apply_preview", Description: "Preview applying one target-CPA recommendation under an explicit maximum.", Class: "mutation_preview"},
 		{Name: "target_cpa_recommendation_dismiss_preview", Description: "Preview dismissing one target-CPA recommendation.", Class: "mutation_preview"},
+		{Name: "optimization_plan_preview", Description: "Build and bind one bounded active-policy optimization plan to a composite receipt.", Class: "mutation_preview"},
+		{Name: "shared_budget_create_preview", Description: "Preview LOC shared-budget creation using a private local billing profile.", Class: "mutation_preview"},
+		{Name: "shared_budget_update_preview", Description: "Preview a typed LOC shared-budget update.", Class: "mutation_preview"},
+		{Name: "campaign_shared_budget_assign_preview", Description: "Preview assigning one LOC shared budget to one campaign.", Class: "mutation_preview"},
+		{Name: "campaign_shared_budget_unassign_preview", Description: "Preview removing one shared-budget assignment from one campaign.", Class: "mutation_preview"},
+		{Name: "campaign_delete_preview", Description: "Preview irreversible deletion of one paused campaign and its cascade inventory.", Class: "mutation_preview"},
+		{Name: "ad_group_delete_preview", Description: "Preview irreversible deletion of one ad group under a paused campaign.", Class: "mutation_preview"},
+		{Name: "keyword_delete_preview", Description: "Preview irreversible deletion of one keyword under a paused campaign.", Class: "mutation_preview"},
+		{Name: "negative_keyword_delete_preview", Description: "Preview irreversible deletion of one negative keyword under a paused campaign.", Class: "mutation_preview"},
+		{Name: "ad_delete_preview", Description: "Preview irreversible deletion of one ad under a paused campaign.", Class: "mutation_preview"},
+		{Name: "creative_delete_preview", Description: "Preview irreversible deletion of one unreferenced creative.", Class: "mutation_preview"},
+		{Name: "shared_budget_delete_preview", Description: "Preview irreversible deletion of one unassigned LOC shared budget.", Class: "mutation_preview"},
 		{Name: "operations_apply", Description: "Apply exactly one non-expired, drift-free preview receipt.", Class: "mutation"},
 		{Name: "operations_inspect", Description: "Inspect receipt binding, expiry, and use state without applying it.", Class: "read"},
 		{Name: "operations_verify", Description: "Re-read a receipt target after an ambiguous write and return current state.", Class: "read"},
@@ -100,10 +114,11 @@ func (s *Service) RegisterMutationTools(server *mcp.Server, store *operations.St
 	s.registerSpecializedMutationTools(server, store)
 	s.registerBulkMutationTools(server, store)
 	s.registerRecommendationMutationTools(server, store)
+	s.registerAdvancedMutationTools(server, store)
 	addPreviewTool(server, mutationSpec("ad_group_bid_preview"), s.adGroupBidPreview(store))
 	addPreviewTool(server, mutationSpec("ad_group_cpa_cap_preview"), s.adGroupCPACapPreview(store))
 
-	destructive := false
+	destructive := true
 	open := true
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "operations_apply", Description: mutationSpec("operations_apply").Description,
@@ -116,8 +131,20 @@ func (s *Service) RegisterMutationTools(server *mcp.Server, store *operations.St
 		if err := s.writeAllowed(ctx, preview.Profile, preview.AdAccountID); err != nil {
 			return failedApply(err)
 		}
+		if preview.Impact != nil && preview.Impact.Destructive {
+			if err := s.deleteAllowed(ctx, preview.Profile, preview.AdAccountID); err != nil {
+				return failedApply(err)
+			}
+		}
 		receipt, err := store.Apply(ctx, s.manager, input.Receipt)
 		if err != nil {
+			if preview.Impact != nil && preview.Impact.PrivateHash != "" {
+				var apiError *appleads.APIError
+				if errors.As(err, &apiError) {
+					return failedApply(fmt.Errorf("private billing operation failed with Apple HTTP %d (%s)", apiError.HTTPStatus, apiError.Code))
+				}
+				return failedApply(errors.New("private billing operation failed; no private diagnostic fields were returned"))
+			}
 			return failedApply(err)
 		}
 		summary := "Operation applied and Apple returned a response"
@@ -127,6 +154,9 @@ func (s *Service) RegisterMutationTools(server *mcp.Server, store *operations.St
 			summary = "Apple partially applied the operation; inspect item results and verify current state"
 		} else if receipt.Status == "failed" {
 			summary = "Apple returned item-level failures; no automatic retry was attempted"
+		}
+		if err := s.recordOptimizationApply(preview, receipt); err != nil {
+			summary += "; local optimization history could not be persisted"
 		}
 		output := ApplyOutput{Summary: summary, Receipt: &receipt}
 		return textResult(summary, receipt.Status == "unknown"), output, nil
@@ -140,7 +170,14 @@ func (s *Service) RegisterMutationTools(server *mcp.Server, store *operations.St
 		if err != nil {
 			return failedApply(err)
 		}
-		output := ApplyOutput{Summary: "Current Apple state loaded for receipt verification", Verification: &verification}
+		preview, _, inspectErr := store.Inspect(input.Receipt)
+		summary := "Current Apple state loaded for receipt verification"
+		if inspectErr == nil {
+			if err := s.recordOptimizationVerification(ctx, preview, verification); err != nil {
+				summary += "; local optimization history could not be persisted"
+			}
+		}
+		output := ApplyOutput{Summary: summary, Verification: &verification}
 		return textResult(output.Summary, false), output, nil
 	})
 
@@ -416,6 +453,23 @@ func (s *Service) writeAllowed(ctx context.Context, profileName, adAccountID str
 		}
 	}
 	return fmt.Errorf("Apple ACL for ad account %q has no recognized write role; roles: %s", adAccountID, strings.Join(roles, ", "))
+}
+
+func (s *Service) deleteAllowed(ctx context.Context, profileName, adAccountID string) error {
+	if !s.allowDeletes {
+		return errors.New("destructive operations are disabled; restart with --allow-deletes")
+	}
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("APPLE_ADS_ALLOW_DELETES")), "true") {
+		return errors.New("destructive operations require APPLE_ADS_ALLOW_DELETES=true for this session")
+	}
+	profile, err := s.manager.Profile(profileName)
+	if err != nil {
+		return err
+	}
+	if !profile.AllowDeletes {
+		return fmt.Errorf("profile %q does not allow deletes", profile.Name)
+	}
+	return s.writeAllowed(ctx, profileName, adAccountID)
 }
 
 func isWriteRole(role string) bool {

@@ -39,12 +39,33 @@ func TestEnvironmentProfile(t *testing.T) {
 	t.Setenv("APPLE_ADS_KEY_ID", "key")
 	t.Setenv("APPLE_ADS_PRIVATE_KEY_PATH", keyPath)
 	t.Setenv("APPLE_ADS_ALLOW_WRITES", "true")
+	t.Setenv("APPLE_ADS_ALLOW_DELETES", "true")
 	cfg, source, err := Load("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if source != "environment" || !cfg.Profiles[0].AllowWrites {
+	if source != "environment" || !cfg.Profiles[0].AllowWrites || !cfg.Profiles[0].AllowDeletes {
 		t.Fatalf("unexpected environment config: source=%q config=%+v", source, cfg)
+	}
+}
+
+func TestDeleteEnvironmentGateDoesNotOverrideFileOptIn(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(keyPath, []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "accounts.json")
+	if err := Save(path, Config{Profiles: []Profile{{Name: "file", ClientID: "client", TeamID: "team", KeyID: "key", PrivateKeyPath: keyPath, AllowWrites: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("APPLE_ADS_ALLOW_DELETES", "true")
+	loaded, _, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Profiles[0].AllowDeletes {
+		t.Fatal("session delete gate must not replace the profile allowDeletes opt-in")
 	}
 }
 
@@ -102,9 +123,9 @@ func TestSavePermissions(t *testing.T) {
 }
 
 func TestPublicProfilesRedactPathsAndAccountIDs(t *testing.T) {
-	cfg := Config{Profiles: []Profile{{Name: "default", DefaultAdAccountID: "123", AllowWrites: true}}}
+	cfg := Config{Profiles: []Profile{{Name: "default", DefaultAdAccountID: "123", AllowWrites: true, AllowDeletes: true}}}
 	profiles := cfg.PublicProfiles("/config/accounts.json")
-	if len(profiles) != 1 || profiles[0].CredentialSource != "file" || profiles[0].Name != "default" || !profiles[0].AllowWrites {
+	if len(profiles) != 1 || profiles[0].CredentialSource != "file" || profiles[0].Name != "default" || !profiles[0].AllowWrites || !profiles[0].AllowDeletes {
 		t.Fatalf("profiles=%+v", profiles)
 	}
 }

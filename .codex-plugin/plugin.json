@@ -1,7 +1,7 @@
 {
   "name": "apple-ads-mcp",
-  "version": "0.2.1",
-  "description": "Local-first Apple Ads Platform API operator with typed inventory and receipt-gated App Store campaign management.",
+  "version": "0.3.0",
+  "description": "Local-first Apple Ads optimizer and App Store campaign operator with typed, receipt-gated lifecycle management.",
   "author": {
     "name": "Alexey Zelentsov",
     "url": "https://github.com/zelentsov-dev"
@@ -13,16 +13,16 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Apple Ads MCP",
-    "shortDescription": "Research and safely manage App Store ads.",
-    "longDescription": "Connect local Apple Ads credentials to typed tools for account readiness, App Store inventory, keyword research, reports, bulk operations, capped recommendations, and receipt-gated campaign changes.",
+    "shortDescription": "Research, optimize, and safely manage App Store ads.",
+    "longDescription": "Connect local Apple Ads credentials to typed tools for account readiness, research, reports, on-demand optimization, shared budgets, and separately gated lifecycle operations.",
     "developerName": "Alexey Zelentsov",
     "category": "Productivity",
     "capabilities": ["Interactive", "Read", "Write"],
     "websiteURL": "https://github.com/zelentsov-dev/apple-ads-mcp",
     "defaultPrompt": [
       "Check which apps I can advertise and find keyword opportunities.",
-      "Audit my Apple Ads campaigns and recommend safe improvements.",
-      "Preview a paused App Store campaign without applying it."
+      "Build a read-only optimization plan for my mature Apple Ads campaigns.",
+      "Preview a paused App Store campaign change without applying it."
     ]
   },
   "mcpServers": "./.mcp.json"

@@ -13,7 +13,9 @@ Apple Ads MCP is independent open-source software. It is not affiliated with, en
 
 ## Current release
 
-`v0.2.1` is the current release. It fixes specialized ad-group bid and CPA-cap previews, hardens bounded structured Apple error diagnostics, and adds full PAUSED operator acceptance. It includes all v0.2 capabilities: typed App Store campaign operations, bounded inventory queries, bulk keyword workflows, recommendation actions with hard caps, and centralized placement validation.
+`v0.3.0` is the current release. It adds an on-demand local optimizer, bounded composite plan receipts, typed shared-budget workflows, and separately gated resource lifecycle operations. Existing v0.2 read, research, report, inventory, campaign, bulk keyword, recommendation, preview, apply, and verification tools remain available.
+
+Optimization is never autonomous: the server has no scheduler and never changes spend in the background. A read-only session can build a baseline and plan. Applying a plan still requires every write gate, an active named policy, one receipt, a fresh report and inventory drift check, and item-level verification.
 
 The release supports the four App Store placements exposed by Apple:
 
@@ -41,11 +43,14 @@ Keywords and negative keywords are Search Results resources. The Platform API re
 | Keywords | individual and bulk targeting/negative keyword create/update, bid, pause, and resume previews |
 | Ads and creatives | typed App Store creative and ad create/update, pause, and resume previews |
 | Recommendations | read, apply-preview, and dismiss-preview for daily budget and target CPA |
+| Optimization | named local policies, 28-day baselines, learning/active plans, composite preview/apply/verify, and bounded history |
+| Shared budgets | typed LOC-only create/update/assign/unassign previews with private local billing profiles |
+| Lifecycle | separately gated campaign, ad-group, keyword, negative-keyword, ad, creative, and shared-budget delete previews |
 | Verification | `operations_inspect`, `operations_apply`, `operations_verify`, and direct resource readback |
 
 Every list is bounded to 200 items and uses `next` pagination. Responses include concise text plus MCP `structuredContent`; raw Apple envelopes and billing contact PII are not exposed.
 
-There is no raw-request tool, DELETE tool, account mutation, shared-budget mutation, Apple Maps surface, or legacy Campaign Management API v5 support.
+There is no raw-request tool, account/delegation mutation, automatic scheduler, Apple Maps surface, or legacy Campaign Management API v5 support.
 
 ## Safety model
 
@@ -64,6 +69,22 @@ Mutation requests are not retried after a timeout. The result is `committed_unve
 
 Recommendation apply operations require an explicit `maximumAmount`. The recommendation currency must match the ad account, the proposed amount must stay under the cap, and the recommendation plus promoted campaign are re-read before apply.
 
+An irreversible delete has five additional gates: `--allow-deletes`, profile `allowDeletes: true`, session-only `APPLE_ADS_ALLOW_DELETES=true`, an exact expected object name or keyword text, and a specialized delete receipt. Campaigns and parents must be `PAUSED`; cascade inventory is bounded and hashed; creatives must have no referencing ads; shared budgets must have no assignments. DELETE is never retried after an ambiguous result.
+
+## Release validation
+
+The v0.3 release candidate passed the complete v0.2 compatibility suite, MCP stdio contract tests, unit and HTTP tests, the race detector, static analysis, distribution validation, and owner-controlled live acceptance against Apple Ads API v1.
+
+Live acceptance confirmed read-only optimization baselines and plans, `PAUSED` fixture creation and readback, budget/bid/strategy updates, pause/resume, receipt drift checks, item verification, and deletion of disposable campaigns, ad groups, keywords, and negative keywords. All retained fixtures remained `PAUSED` with zero spend.
+
+Account-dependent paths have an explicit evidence boundary:
+
+- Active optimization-plan apply and `MAX_CONVERSIONS` remain automated-test verified until a deliberately selected mature campaign satisfies the minimum 14-day data and Apple eligibility gates.
+- Shared-budget create/update/assignment/delete remain contract- and HTTP-test verified because the live acceptance account uses `PAYG`; Apple requires `LOC`.
+- Default Product Page ad and creative deletion is confirmed as `not_eligible` because Apple does not allow those resources to be deleted individually.
+
+These boundaries do not weaken the default safety model: unsupported or insufficiently evidenced operations fail closed and never become successful empty responses.
+
 ## Install
 
 ### GitHub release
@@ -73,10 +94,10 @@ Download the archive for your platform from [GitHub Releases](https://github.com
 Apple silicon example:
 
 ```bash
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.2.1/apple-ads-mcp_0.2.1_darwin_arm64.tar.gz
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.2.1/checksums.txt
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.0/apple-ads-mcp_0.3.0_darwin_arm64.tar.gz
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.0/checksums.txt
 shasum -a 256 -c checksums.txt --ignore-missing
-tar -xzf apple-ads-mcp_0.2.1_darwin_arm64.tar.gz
+tar -xzf apple-ads-mcp_0.3.0_darwin_arm64.tar.gz
 sudo install -m 0755 apple-ads-mcp /usr/local/bin/apple-ads-mcp
 ```
 
@@ -85,14 +106,14 @@ sudo install -m 0755 apple-ads-mcp /usr/local/bin/apple-ads-mcp
 Each release publishes a checksum-pinned formula:
 
 ```bash
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.2.1/apple-ads-mcp.rb
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.0/apple-ads-mcp.rb
 brew install --formula ./apple-ads-mcp.rb
 ```
 
 ### OCI image
 
 ```bash
-docker pull ghcr.io/zelentsov-dev/apple-ads-mcp:0.2.1
+docker pull ghcr.io/zelentsov-dev/apple-ads-mcp:0.3.0
 ```
 
 The image runs `serve --stdio` by default. Mount `accounts.json` and its referenced private key read-only.
@@ -102,7 +123,7 @@ The image runs `serve --stdio` by default. Mount `accounts.json` and its referen
 ```bash
 git clone https://github.com/zelentsov-dev/apple-ads-mcp.git
 cd apple-ads-mcp
-go build -trimpath -o ./bin/apple-ads-mcp ./cmd/apple-ads-mcp
+go build -trimpath -o ./apple-ads-mcp ./cmd/apple-ads-mcp
 ```
 
 Go 1.26.6 or newer is required.
@@ -142,7 +163,8 @@ The default configuration path is `~/.config/apple-ads-mcp/accounts.json`:
       "keyId": "EXAMPLEKEY",
       "privateKeyPath": "/absolute/path/to/apple-ads-private-key.pem",
       "defaultAdAccountId": "123456789",
-      "allowWrites": false
+      "allowWrites": false,
+      "allowDeletes": false
     }
   ]
 }
@@ -161,7 +183,7 @@ apple-ads-mcp auth doctor --profile production-read-only
 apple-ads-mcp accounts discover --profile production-read-only
 ```
 
-Configuration precedence is `--config`, `APPLE_ADS_MCP_CONFIG`, the default file, then single-profile `APPLE_ADS_*` environment variables. Supported overrides are `APPLE_ADS_PROFILE`, `APPLE_ADS_CLIENT_ID`, `APPLE_ADS_TEAM_ID`, `APPLE_ADS_KEY_ID`, `APPLE_ADS_PRIVATE_KEY_PATH`, `APPLE_ADS_AD_ACCOUNT_ID`, and `APPLE_ADS_ALLOW_WRITES`.
+Configuration precedence is `--config`, `APPLE_ADS_MCP_CONFIG`, the default file, then single-profile `APPLE_ADS_*` environment variables. Supported single-profile variables are `APPLE_ADS_PROFILE`, `APPLE_ADS_CLIENT_ID`, `APPLE_ADS_TEAM_ID`, `APPLE_ADS_KEY_ID`, `APPLE_ADS_PRIVATE_KEY_PATH`, `APPLE_ADS_AD_ACCOUNT_ID`, `APPLE_ADS_ALLOW_WRITES`, and `APPLE_ADS_ALLOW_DELETES`. For a file-backed profile, environment variables do not silently grant persistent write or delete permission.
 
 ## Connect an MCP client
 
@@ -204,6 +226,50 @@ apple-ads-mcp serve --stdio --allow-writes
 
 This does not change anything by itself. Every mutation still needs explicit `profile`, `adAccountId`, a specialized preview, receipt apply, and verification.
 
+## Configure on-demand optimization
+
+Create a named local policy:
+
+```bash
+apple-ads-mcp optimization policy init
+apple-ads-mcp optimization policy validate --name mature-product-balanced
+apple-ads-mcp optimization doctor --policy mature-product-balanced
+```
+
+Policies are stored in `~/.config/apple-ads-mcp/optimization-policies.json` with mode `0600`. Each policy binds one profile, one ad account, one promoted app, and at most 20 campaign IDs. `learning` mode requires no business target and only returns evidence. `active` mode requires `targetInstallCPA`, total and per-campaign daily-budget caps, and explicit permissions for budget, bid, strategy, pause, resume, and retest.
+
+The `balanced` preset uses 28 completed days, compares the latest 7 days with the previous 7, requires at least 14 completed days, applies a 72-hour cooldown, normally proposes 10% changes, and never exceeds 20% per run. It can propose `MAX_CONVERSIONS` only for eligible Search Results Search Match inventory averaging at least five tap installs per day over 14 days. It never proposes deletion.
+
+Typical agent flow:
+
+1. Call `optimization_baseline` and `optimization_plan` in a read-only server.
+2. Review Apple recommendations separately from calculated actions.
+3. Start an authorized write session and call `optimization_plan_preview`.
+4. Inspect `OperationImpact`, apply the same receipt once, then call `operations_verify`.
+5. Review bounded local history under `~/.local/share/apple-ads-mcp/optimization/`.
+
+No credential, raw Apple envelope, or billing contact is stored in optimization history.
+
+## Shared budgets and lifecycle operations
+
+Shared-budget mutations are available only when Apple reports the account payment model as `LOC`. Create and update operations bind the budget exclusively to the explicitly selected ad account. Campaign assignment tools preserve unrelated existing assignments, and cross-account shared budgets fail closed. Initialize private billing data locally:
+
+```bash
+apple-ads-mcp billing profile init
+```
+
+`~/.config/apple-ads-mcp/billing-profiles.json` must be `0600`. MCP inputs contain only the local `billingProfile` name. Buyer names and email addresses are not returned in tool output, logs, history, or receipt previews. `PAYG` accounts return `not_eligible` without attempting a write.
+
+For an explicitly authorized destructive maintenance session:
+
+```bash
+APPLE_ADS_ALLOW_WRITES=true \
+APPLE_ADS_ALLOW_DELETES=true \
+apple-ads-mcp serve --stdio --allow-writes --allow-deletes
+```
+
+The selected file-backed profile must already contain `allowDeletes: true`; `allowWrites` may be enabled for only the current process with `APPLE_ADS_ALLOW_WRITES=true`. The server and session delete gates remain independent. Use a specialized `*_delete_preview`, compare the full cascade impact and exact expected text, apply once, and verify `deleted: true`. Do not use lifecycle operations as part of an optimization plan.
+
 ## Operational limits
 
 - Apple provides no public Ads API sandbox. Live mutation acceptance is manual, explicitly enabled, uses clearly named `PAUSED` fixtures, and is never part of automatic CI.
@@ -212,6 +278,7 @@ This does not change anything by itself. Every mutation still needs explicit `pr
 - Campaign and object names are validated by Apple; the web UI and API may accept different punctuation.
 - Apple rejects the vertical-bar character (`|`) in campaign names; use a hyphenated readable name instead. Ad-group creation requires an ISO 8601 `startTime` in the ad-account timezone.
 - Reports can lag and remain empty until delivery occurs.
+- Apple rejects individual deletion of an ad that uses the Default Product Page (`CAN_NOT_DELETE_DPP_CREATIVE_AD`). The server returns `not_eligible` during preview; use lifecycle deletion only for disposable Custom Product Page ads and creatives.
 - Trial and subscription attribution belongs to your attribution stack; the Apple Ads Platform API alone does not prove keyword-to-trial attribution.
 
 ### Known Apple API responses
@@ -225,7 +292,7 @@ The server returns these as bounded structured Apple errors, including whether t
 
 ## Compatibility
 
-v0.2 keeps existing tool names but replaces open mutation payloads with resource-specific schemas. Unknown fields are rejected. See [v0.2 migration notes](docs/MIGRATION-v0.2.md) before upgrading an automated client.
+v0.3 preserves all v0.2.1 tool names and schemas, then adds optimization, shared-budget mutation, bid-strategy, and lifecycle tools. See the [v0.3 migration notes](docs/MIGRATION-v0.3.md); older clients affected by the typed v0.2 schema change should also read the [v0.2 notes](docs/MIGRATION-v0.2.md).
 
 The public tool schema is not frozen before v1.0. API-family scope and operation status are tracked in the [machine-readable operation matrix](api-contract/operations.json). The official Java client baseline and App Store endpoint inventory are tracked in [upstream-baseline.json](api-contract/upstream-baseline.json).
 
@@ -236,12 +303,14 @@ gofmt -w cmd internal
 go test ./...
 go test -race ./...
 go vet ./...
+go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 -checks 'all,-ST1000,-ST1005' ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 go run github.com/zricethezav/gitleaks/v8@v8.29.1 dir --no-banner --redact .
 go run github.com/goreleaser/goreleaser/v2@v2.17.1 check
 go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 npx --yes markdownlint-cli2@0.23.2 '**/*.md'
 python3 scripts/validate_distribution.py
+python3 scripts/audit_upstream.py
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and the [roadmap](docs/ROADMAP.md).

@@ -334,6 +334,15 @@ func validateBidStrategy(value any) error {
 	if !ok {
 		return nil
 	}
+	strategyType := strings.ToUpper(stringField(strategy, "bidStrategyType"))
+	if strategyType != "" && strategyType != "MANUAL_CPT" && strategyType != "MAX_CONVERSIONS" {
+		return fmt.Errorf("bidStrategyType %q is outside App Store Ads scope", strategyType)
+	}
+	if strategyType == "MAX_CONVERSIONS" {
+		if _, exists := strategy["bid"]; exists {
+			return errors.New("MAX_CONVERSIONS must not include a manual bid")
+		}
+	}
 	return validateOptionalMoneyFields(strategy, "bid")
 }
 
@@ -388,7 +397,7 @@ func validateMoneyValueField(payload map[string]any, field string) error {
 }
 
 func compareMoney(left, right appleads.Money) (int, error) {
-	if strings.ToUpper(left.Currency) != strings.ToUpper(right.Currency) {
+	if !strings.EqualFold(left.Currency, right.Currency) {
 		return 0, errors.New("money currencies do not match")
 	}
 	leftValue, ok := new(big.Rat).SetString(left.Amount)

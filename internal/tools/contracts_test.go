@@ -12,7 +12,7 @@ func TestToolCatalogIsUniqueAndClassified(t *testing.T) {
 		if item.Name == "raw_request" {
 			t.Fatal("raw_request must not exist")
 		}
-		if strings.Contains(item.Name, "delete") || strings.Contains(item.Name, "shared_budget_create") || strings.Contains(item.Name, "shared_budget_update") || strings.Contains(item.Name, "ad_account_update") {
+		if strings.Contains(item.Name, "ad_account_update") || strings.Contains(item.Name, "raw_request") || strings.Contains(item.Name, "maps") {
 			t.Fatalf("out-of-scope mutation tool exposed: %s", item.Name)
 		}
 		if item.Name == "" || item.Description == "" || item.Class == "" {
@@ -28,8 +28,46 @@ func TestToolCatalogIsUniqueAndClassified(t *testing.T) {
 			t.Fatalf("tool %q has unknown class %q", item.Name, item.Class)
 		}
 	}
-	if len(all) < 85 {
+	if len(all) < 105 {
 		t.Fatalf("unexpectedly small tool catalog: %d", len(all))
+	}
+	for _, required := range []string{
+		"optimization_baseline", "optimization_plan", "optimization_plan_preview",
+		"shared_budget_create_preview", "shared_budget_update_preview", "campaign_shared_budget_assign_preview",
+		"campaign_delete_preview", "creative_delete_preview", "shared_budget_delete_preview",
+	} {
+		if _, exists := seen[required]; !exists {
+			t.Fatalf("required v0.3 tool is missing: %s", required)
+		}
+	}
+}
+
+func TestV021ToolNamesRemainAvailable(t *testing.T) {
+	seen := make(map[string]struct{})
+	for _, item := range append(ReadSpecs(), MutationSpecs()...) {
+		seen[item.Name] = struct{}{}
+	}
+	legacy := []string{
+		"server_info", "profiles_list", "auth_check", "ad_accounts_list", "ad_account_get", "advertiser_resources_list", "org_get",
+		"apps_search", "apps_get", "apps_eligibility", "app_locale_details", "supported_app_languages", "app_store_geo_search",
+		"app_rejection_reasons_query", "app_rejection_reason_get", "product_page_get", "product_pages_query", "product_page_locales",
+		"keyword_suggestions", "phrase_suggestions", "category_suggestions", "target_cpa_suggestions", "search_term_popularity", "impression_share",
+		"campaign_report", "ad_group_report", "ad_report", "keyword_report", "search_term_report", "daily_budget_recommendations", "target_cpa_recommendations",
+		"change_history", "change_history_detail", "campaign_status_reason_details", "account_health", "app_opportunities", "campaign_audit",
+		"campaign_get", "ad_group_get", "keyword_get", "negative_keyword_get", "ad_get", "creative_get", "shared_budget_get",
+		"campaigns_query", "ad_groups_query", "keywords_query", "negative_keywords_query", "ads_query", "creatives_query", "shared_budgets_query", "campaign_inventory",
+		"campaign_create_preview", "campaign_update_preview", "campaign_pause_preview", "campaign_resume_preview", "campaign_daily_budget_preview", "campaign_countries_preview", "campaign_schedule_preview",
+		"ad_group_create_preview", "ad_group_update_preview", "ad_group_pause_preview", "ad_group_resume_preview", "ad_group_schedule_preview", "ad_group_search_match_preview", "ad_group_targeting_preview", "ad_group_bid_preview", "ad_group_cpa_cap_preview",
+		"keyword_create_preview", "keyword_update_preview", "keyword_bid_preview", "keyword_pause_preview", "keyword_resume_preview", "negative_keyword_create_preview", "negative_keyword_update_preview",
+		"ad_create_preview", "ad_update_preview", "ad_pause_preview", "ad_resume_preview", "creative_create_preview", "creative_update_preview",
+		"keywords_bulk_create_preview", "keywords_bulk_update_preview", "negative_keywords_bulk_create_preview", "negative_keywords_bulk_update_preview",
+		"daily_budget_recommendation_apply_preview", "daily_budget_recommendation_dismiss_preview", "target_cpa_recommendation_apply_preview", "target_cpa_recommendation_dismiss_preview",
+		"operations_apply", "operations_inspect", "operations_verify",
+	}
+	for _, name := range legacy {
+		if _, exists := seen[name]; !exists {
+			t.Fatalf("v0.2.1 tool was removed: %s", name)
+		}
 	}
 }
 

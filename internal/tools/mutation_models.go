@@ -62,6 +62,48 @@ type CampaignUpdatePayload struct {
 	BidStrategy *BidStrategy        `json:"bidStrategy,omitempty" jsonschema:"campaign bid strategy"`
 }
 
+type CampaignBidStrategyPreviewInput struct {
+	AccountInput
+	CampaignID string      `json:"campaignId"`
+	Strategy   BidStrategy `json:"strategy"`
+}
+
+type SharedBudgetCreatePreviewInput struct {
+	AccountInput
+	Name           string              `json:"name"`
+	StartTime      appleads.Timestamp  `json:"startTime"`
+	EndTime        *appleads.Timestamp `json:"endTime,omitempty"`
+	Value          appleads.Money      `json:"value"`
+	BillingProfile string              `json:"billingProfile"`
+}
+
+type SharedBudgetUpdatePreviewInput struct {
+	AccountInput
+	SharedBudgetID string              `json:"sharedBudgetId"`
+	Name           *string             `json:"name,omitempty"`
+	StartTime      *appleads.Timestamp `json:"startTime,omitempty"`
+	EndTime        *appleads.Timestamp `json:"endTime,omitempty"`
+	Value          *appleads.Money     `json:"value,omitempty"`
+	BillingProfile string              `json:"billingProfile,omitempty"`
+}
+
+type CampaignSharedBudgetPreviewInput struct {
+	AccountInput
+	CampaignID     string `json:"campaignId"`
+	SharedBudgetID string `json:"sharedBudgetId"`
+}
+
+type DeletePreviewInput struct {
+	AccountInput
+	ID           string `json:"id"`
+	ExpectedText string `json:"expectedText" jsonschema:"exact current resource name or keyword text"`
+}
+
+type OptimizationPolicyInput struct {
+	AccountInput
+	Policy string `json:"policy"`
+}
+
 type AdGroupTargeting struct {
 	Country       *TargetingData `json:"country,omitempty"`
 	AdminArea     *TargetingData `json:"adminArea,omitempty"`

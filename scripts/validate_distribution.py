@@ -53,7 +53,13 @@ def main() -> None:
     for reference in ["onboarding.md", "tool-routing.md", "campaign-workflows.md", "safety.md"]:
         require((ROOT / "skills/apple-ads-operator/references" / reference).is_file(), f"missing {reference}")
     require((ROOT / "docs/MIGRATION-v0.2.md").is_file(), "v0.2 migration notes missing")
-    require("DELETE" not in " ".join(item["area"] for item in operations["operations"]), "DELETE operation area exposed")
+    require((ROOT / "docs/MIGRATION-v0.3.md").is_file(), "v0.3 migration notes missing")
+    require("optimization-read" in areas and "optimization-apply" in areas, "optimization operation coverage missing")
+    require("resource-lifecycle" in areas and "shared-budgets" in areas, "v0.3 lifecycle coverage missing")
+    lifecycle = next(item for item in operations["operations"] if item["area"] == "resource-lifecycle")
+    require(lifecycle["classification"] == "destructive-mutation", "delete classification mismatch")
+    require("--allow-deletes" in readme and "APPLE_ADS_ALLOW_DELETES" in readme, "README delete gates missing")
+    require("optimization policy init" in readme and "optimization_plan" in readme, "README optimizer setup missing")
     require("scripts/audit_upstream.py" in (ROOT / ".github/workflows/upstream-audit.yml").read_text(), "upstream audit script is not scheduled")
     for source in ROOT.rglob("*.go"):
         if source.name.endswith("_test.go"):

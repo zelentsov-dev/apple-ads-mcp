@@ -427,7 +427,7 @@ func validateSelectedFields(name string, values []string, allowed map[string]str
 
 func reportAllowedFields(kind string) (map[string]struct{}, bool) {
 	common := []string{
-		"date", "localSpend", "impressions", "taps", "ttr", "cpt", "cpm", "tapInstalls", "tapInstallCPI",
+		"localSpend", "impressions", "taps", "ttr", "cpt", "cpm", "tapInstalls", "tapInstallCPI",
 		"totalNewDownloads", "totalRedownloads", "viewInstalls", "totalInstalls", "tapNewDownloads", "tapRedownloads",
 		"viewNewDownloads", "viewRedownloads", "totalAvgCPI", "totalInstallRate", "tapInstallRate", "tapPreOrdersPlaced",
 		"viewPreOrdersPlaced", "totalPreOrdersPlaced", "countryOrRegion", "deviceClass",

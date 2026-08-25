@@ -2,7 +2,9 @@ package operations
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,28 @@ type fakeExecutor struct {
 	writes       int
 	ambiguous    bool
 	onRead       func()
+}
+
+type sequenceExecutor struct {
+	state      any
+	writes     int
+	failAt     int
+	failure    error
+	deleteRead bool
+}
+
+func (f *sequenceExecutor) Do(_ context.Context, _, _ string, operation appleads.Operation) (appleads.Result, error) {
+	if !operation.IsMutation() {
+		if f.deleteRead {
+			return appleads.Result{}, &appleads.APIError{HTTPStatus: 404, Message: "Not Found"}
+		}
+		return appleads.Result{Data: f.state, Status: 200}, nil
+	}
+	f.writes++
+	if f.failAt == f.writes {
+		return appleads.Result{}, f.failure
+	}
+	return appleads.Result{Data: map[string]any{"id": operation.Path()}, Status: 200}, nil
 }
 
 func (f *fakeExecutor) Do(_ context.Context, _, _ string, operation appleads.Operation) (appleads.Result, error) {
@@ -98,6 +122,58 @@ func TestReceiptApplySingleUseAndBinding(t *testing.T) {
 	}
 }
 
+func TestReceiptOutputsRedactPrivateBillingData(t *testing.T) {
+	store := NewStore()
+	executor := &fakeExecutor{
+		state: map[string]any{
+			"id":               "123",
+			"invoiceDetail":    map[string]any{"billingEmail": "private@example.com"},
+			"primaryBuyerName": "Private Buyer",
+		},
+		mutationData: map[string]any{
+			"id":              "123",
+			"billing_contact": map[string]any{"email": "private@example.com"},
+			"name":            "Public Budget",
+		},
+	}
+	verify, _ := appleads.ResourceGet("shared-budgets", "123")
+	mutation, _ := appleads.ResourceUpdate("shared-budgets", "123", map[string]any{"name": "Public Budget"})
+	preview, err := store.Preview(context.Background(), executor, "owner", "456", "shared_budget_update", []string{"123"}, map[string]any{"name": "Public Budget"}, verify, mutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoPrivateBillingData(t, preview.Before)
+	inspected, _, err := store.Inspect(preview.Receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoPrivateBillingData(t, inspected.Before)
+	receipt, err := store.Apply(context.Background(), executor, preview.Receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoPrivateBillingData(t, receipt.Result)
+	verification, err := store.Verify(context.Background(), executor, preview.Receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoPrivateBillingData(t, verification)
+}
+
+func assertNoPrivateBillingData(t *testing.T, value any) {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lower := strings.ToLower(string(data))
+	for _, forbidden := range []string{"private@example.com", "private buyer", "invoicedetail", "billing_contact", "primarybuyer"} {
+		if strings.Contains(lower, forbidden) {
+			t.Fatalf("private billing data leaked: %s", data)
+		}
+	}
+}
+
 func TestReceiptExpiryAndDrift(t *testing.T) {
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	store := NewStoreForTest(func() time.Time { return now }, time.Minute)
@@ -122,6 +198,7 @@ func TestReceiptIgnoresUnorderedArrayOrdering(t *testing.T) {
 	executor := &fakeExecutor{state: map[string]any{
 		"systemStatusReasons": []any{"AD_GROUPS_MISSING", "PAUSED_BY_USER"},
 		"targeting":           map[string]any{"countries": []any{"US", "JP"}},
+		"sharedBudgets":       []any{map[string]any{"budgetId": "10"}, map[string]any{"budgetId": "20"}},
 	}}
 	verify, _ := appleads.ResourceGet("campaigns", "123")
 	mutation, _ := appleads.ResourceUpdate("campaigns", "123", map[string]any{"status": "PAUSED"})
@@ -132,6 +209,7 @@ func TestReceiptIgnoresUnorderedArrayOrdering(t *testing.T) {
 	executor.state = map[string]any{
 		"systemStatusReasons": []any{"PAUSED_BY_USER", "AD_GROUPS_MISSING"},
 		"targeting":           map[string]any{"countries": []any{"JP", "US"}},
+		"sharedBudgets":       []any{map[string]any{"budgetId": "20"}, map[string]any{"budgetId": "10"}},
 	}
 	receipt, err := store.Apply(context.Background(), executor, preview.Receipt)
 	if err != nil || receipt.Status != "applied" || executor.writes != 1 {
@@ -259,5 +337,84 @@ func TestReceiptByteCapacity(t *testing.T) {
 	_, err := store.Preview(context.Background(), executor, "owner", "456", "update", []string{"123"}, map[string]any{"name": strings.Repeat("x", 9<<20)}, verify, mutation)
 	if err == nil {
 		t.Fatal("expected receipt byte capacity rejection")
+	}
+}
+
+func TestSequenceReceiptByteCapacityIncludesMutationBodies(t *testing.T) {
+	store := NewStore()
+	executor := &fakeExecutor{state: map[string]any{"status": "ENABLED"}}
+	verify, _ := appleads.ResourceGet("campaigns", "123")
+	steps := make([]SequenceStep, 0, 64)
+	for index := 0; index < 64; index++ {
+		mutation, _ := appleads.ResourceUpdate("campaigns", fmt.Sprint(index+1), map[string]any{"private": strings.Repeat("x", 600<<10)})
+		steps = append(steps, SequenceStep{
+			Item:     OperationItemPreview{CorrelationID: fmt.Sprintf("item-%d", index+1), After: map[string]any{"status": "PAUSED"}},
+			Mutation: mutation,
+		})
+	}
+	if _, err := store.PreviewSequence(context.Background(), executor, "owner", "10", "plan", nil, []VerificationRead{{Name: "inventory", Operation: verify}}, steps, nil); err == nil {
+		t.Fatal("expected sequence receipt byte capacity rejection")
+	}
+}
+
+func TestSequenceContinuesIndependentClientFailuresAndSkipsDependencies(t *testing.T) {
+	store := NewStore()
+	executor := &sequenceExecutor{state: map[string]any{"status": "ENABLED"}, failAt: 1, failure: &appleads.APIError{HTTPStatus: 400, Code: "INVALID", Message: "invalid"}}
+	verify, _ := appleads.ResourceGet("campaigns", "123")
+	first, _ := appleads.ResourceUpdate("campaigns", "123", map[string]any{"status": "PAUSED"})
+	second, _ := appleads.ResourceUpdate("campaigns", "456", map[string]any{"status": "PAUSED"})
+	third, _ := appleads.ResourceUpdate("campaigns", "789", map[string]any{"status": "PAUSED"})
+	preview, err := store.PreviewSequence(context.Background(), executor, "owner", "10", "plan", []string{"123", "456", "789"}, []VerificationRead{{Name: "inventory", Operation: verify}}, []SequenceStep{
+		{Item: OperationItemPreview{CorrelationID: "a", CampaignID: "123", TargetID: "123", Action: "pause", After: map[string]any{"status": "PAUSED"}}, Mutation: first},
+		{Item: OperationItemPreview{CorrelationID: "b", CampaignID: "456", TargetID: "456", Action: "pause", After: map[string]any{"status": "PAUSED"}}, Mutation: second},
+		{Item: OperationItemPreview{CorrelationID: "c", CampaignID: "789", TargetID: "789", Action: "pause", After: map[string]any{"status": "PAUSED"}, DependsOn: []string{"a"}}, Mutation: third},
+	}, &OperationImpact{SpendAffecting: true, ObjectCount: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := store.Apply(context.Background(), executor, preview.Receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Status != "partial" || executor.writes != 2 || receipt.Items[0].Status != "failed" || receipt.Items[1].Status != "applied" || receipt.Items[2].Status != "skipped" {
+		t.Fatalf("receipt=%+v writes=%d", receipt, executor.writes)
+	}
+}
+
+func TestSequenceStopsAfterAmbiguousWrite(t *testing.T) {
+	store := NewStore()
+	executor := &sequenceExecutor{state: map[string]any{"status": "ENABLED"}, failAt: 2, failure: &appleads.AmbiguousWriteError{Cause: errors.New("timeout")}}
+	verify, _ := appleads.ResourceGet("campaigns", "123")
+	steps := make([]SequenceStep, 0, 3)
+	for index, id := range []string{"123", "456", "789"} {
+		mutation, _ := appleads.ResourceUpdate("campaigns", id, map[string]any{"status": "PAUSED"})
+		steps = append(steps, SequenceStep{Item: OperationItemPreview{CorrelationID: string(rune('a' + index)), TargetID: id, After: map[string]any{"status": "PAUSED"}}, Mutation: mutation})
+	}
+	preview, err := store.PreviewSequence(context.Background(), executor, "owner", "10", "plan", nil, []VerificationRead{{Name: "inventory", Operation: verify}}, steps, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := store.Apply(context.Background(), executor, preview.Receipt)
+	if err != nil || receipt.Status != "unknown" || executor.writes != 2 || receipt.Items[0].Status != "applied" || receipt.Items[1].Status != "unknown" || receipt.Items[2].Status != "not_attempted" {
+		t.Fatalf("receipt=%+v writes=%d err=%v", receipt, executor.writes, err)
+	}
+}
+
+func TestDeleteVerificationTreatsNotFoundAsDeleted(t *testing.T) {
+	store := NewStore()
+	executor := &sequenceExecutor{state: map[string]any{"id": "123", "name": "fixture"}}
+	verify, _ := appleads.ResourceGet("campaigns", "123")
+	mutation, _ := appleads.ResourceDelete("campaigns", "123")
+	preview, err := store.PreviewComposite(context.Background(), executor, "owner", "10", "delete", []string{"123"}, map[string]any{"expectedText": "fixture"}, []VerificationRead{{Name: "target", Operation: verify, ExpectDeleted: true}}, mutation, PreviewOptions{Impact: &OperationImpact{Destructive: true, ObjectCount: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Apply(context.Background(), executor, preview.Receipt); err != nil {
+		t.Fatal(err)
+	}
+	executor.deleteRead = true
+	verification, err := store.Verify(context.Background(), executor, preview.Receipt)
+	if err != nil || len(verification.Objects) != 1 || verification.Objects[0].Status != "deleted" {
+		t.Fatalf("verification=%+v err=%v", verification, err)
 	}
 }

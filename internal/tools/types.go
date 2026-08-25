@@ -153,12 +153,13 @@ type Output struct {
 }
 
 type ErrorOutput struct {
-	Type       string         `json:"type"`
-	Message    string         `json:"message"`
-	HTTPStatus int            `json:"httpStatus,omitempty"`
-	Code       string         `json:"code,omitempty"`
-	Retryable  bool           `json:"retryable,omitempty"`
-	Details    map[string]any `json:"details,omitempty"`
+	Type           string         `json:"type"`
+	Message        string         `json:"message"`
+	HTTPStatus     int            `json:"httpStatus,omitempty"`
+	Code           string         `json:"code,omitempty"`
+	ResponseFormat string         `json:"responseFormat,omitempty"`
+	Retryable      bool           `json:"retryable,omitempty"`
+	Details        map[string]any `json:"details,omitempty"`
 }
 
 type Spec struct {
@@ -274,6 +275,7 @@ func errorOutput(err error) Output {
 		output.Message = apiError.Message
 		output.HTTPStatus = apiError.HTTPStatus
 		output.Code = apiError.Code
+		output.ResponseFormat = apiError.ResponseFormat
 		output.Retryable = apiError.Retryable
 		output.Details = apiError.Details
 		summary = fmt.Sprintf("Apple Ads API request failed with HTTP %d", apiError.HTTPStatus)

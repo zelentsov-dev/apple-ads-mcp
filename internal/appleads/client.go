@@ -140,6 +140,13 @@ func (c *Client) doOnce(ctx context.Context, adAccountID string, operation Opera
 	if len(data) > maxResponseBody {
 		return Result{}, resp, true, errors.New("Apple Ads response exceeds size limit")
 	}
+	if len(bytes.TrimSpace(data)) == 0 && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
+		return Result{
+			Data:      map[string]any{"responseFormat": "empty"},
+			Status:    resp.StatusCode,
+			RateLimit: rateLimitFromHeaders(resp.Header),
+		}, resp, true, nil
+	}
 	decoded, err := decodeEnvelope(data)
 	if err != nil {
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -230,10 +237,11 @@ func stringInt(value any) int {
 func apiError(status int, data any) error {
 	result := &APIError{HTTPStatus: status, Message: http.StatusText(status), Retryable: retryableStatus(status)}
 	if raw, ok := data.(map[string]any); ok {
-		result.Code = firstString(raw, "code", "errorCode")
+		result.Code = safeErrorText(firstString(raw, "code", "errorCode"), 128)
+		result.ResponseFormat = safeResponseFormat(firstString(raw, "responseFormat"))
 		var details []any
 		if status >= 400 && status < 500 {
-			if message := firstString(raw, "message"); message != "" {
+			if message := safeErrorText(firstString(raw, "message"), 1024); message != "" {
 				result.Message = message
 			}
 			details = safeErrorDetails(raw["details"])
@@ -249,6 +257,15 @@ func apiError(status int, data any) error {
 		}
 	}
 	return result
+}
+
+func safeResponseFormat(value string) string {
+	switch value {
+	case "empty", "non_json":
+		return value
+	default:
+		return ""
+	}
 }
 
 func safeErrorDetails(value any) []any {
@@ -267,10 +284,11 @@ func safeErrorDetails(value any) []any {
 		}
 		detail := map[string]any{}
 		for _, key := range []string{"code", "message"} {
-			if text := firstString(raw, key); text != "" {
-				if len(text) > 1024 {
-					text = text[:1024]
-				}
+			limit := 1024
+			if key == "code" {
+				limit = 128
+			}
+			if text := safeErrorText(firstString(raw, key), limit); text != "" {
 				detail[key] = text
 			}
 		}
@@ -284,11 +302,10 @@ func safeErrorDetails(value any) []any {
 				if !ok {
 					continue
 				}
-				if len(key) > 128 {
-					key = key[:128]
-				}
-				if len(text) > 1024 {
-					text = text[:1024]
+				key = safeErrorText(key, 128)
+				text = safeErrorText(text, 1024)
+				if key == "" || text == "" {
+					continue
 				}
 				safeInfo[key] = text
 			}
@@ -301,6 +318,24 @@ func safeErrorDetails(value any) []any {
 		}
 	}
 	return result
+}
+
+func safeErrorText(value string, limit int) string {
+	value = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, value)
+	value = strings.TrimSpace(value)
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) > limit {
+		value = string(runes[:limit])
+	}
+	return value
 }
 
 func firstString(raw map[string]any, keys ...string) string {

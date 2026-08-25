@@ -62,7 +62,7 @@ func TestMCPV02PausedFixtures(t *testing.T) {
 	defer cancel()
 	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMCPV02WriteHelper$")
 	command.Env = append(os.Environ(), "APPLE_ADS_MCP_LIVE_WRITE_HELPER=1", "APPLE_ADS_ALLOW_WRITES=true")
-	client := mcp.NewClient(&mcp.Implementation{Name: "live-v02-write-test", Version: "0.2.0"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "live-v02-write-test", Version: "0.2.1"}, nil)
 	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: command}, nil)
 	if err != nil {
 		t.Fatal(err)

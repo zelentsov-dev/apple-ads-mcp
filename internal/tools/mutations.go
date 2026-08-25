@@ -294,7 +294,10 @@ func (s *Service) adGroupBidPreview(store *operations.Store) func(context.Contex
 		if err := money.ValidatePositive(); err != nil {
 			return failedPreview(err)
 		}
-		payload := map[string]any{"bidStrategy": map[string]any{"bid": money}}
+		payload, err := adGroupBidUpdatePayload(money)
+		if err != nil {
+			return failedPreview(err)
+		}
 		return s.updatePreviewPayload(ctx, store, "adgroups", "ad_group_bid", input.AccountInput, input.AdGroupID, payload)
 	}
 }
@@ -305,9 +308,20 @@ func (s *Service) adGroupCPACapPreview(store *operations.Store) func(context.Con
 		if err := money.ValidatePositive(); err != nil {
 			return failedPreview(err)
 		}
-		payload := map[string]any{"cpaCap": map[string]any{"value": money}}
+		payload, err := adGroupCPACapUpdatePayload(money)
+		if err != nil {
+			return failedPreview(err)
+		}
 		return s.updatePreviewPayload(ctx, store, "adgroups", "ad_group_cpa_cap", input.AccountInput, input.AdGroupID, payload)
 	}
+}
+
+func adGroupBidUpdatePayload(money appleads.Money) (map[string]any, error) {
+	return typedPayloadMap(AdGroupUpdatePayload{BidStrategy: &BidStrategy{Bid: &money}})
+}
+
+func adGroupCPACapUpdatePayload(money appleads.Money) (map[string]any, error) {
+	return typedPayloadMap(AdGroupUpdatePayload{CPACap: &CPAGoal{Value: money}})
 }
 
 func (s *Service) validateWrite(ctx context.Context, account AccountInput, payload map[string]any) error {

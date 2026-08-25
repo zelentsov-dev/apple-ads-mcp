@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/zelentsov-dev/apple-ads-mcp/internal/appleads"
 )
 
 func TestQueryInputBoundedRequestNormalizesAdamIDs(t *testing.T) {
@@ -101,6 +103,27 @@ func TestPublicOutputRemovesBillingPIIRecursively(t *testing.T) {
 	nested := value["nested"].([]any)[0].(map[string]any)
 	if _, exists := nested["primaryBuyerEmail"]; exists || nested["amount"] != "10.00" {
 		t.Fatalf("nested=%#v", nested)
+	}
+}
+
+func TestAppleAPIErrorOutputRemainsStructured(t *testing.T) {
+	output := errorOutput(&appleads.APIError{
+		HTTPStatus:     400,
+		Code:           "INVALID_VALUE",
+		Message:        "Invalid selector value",
+		ResponseFormat: "non_json",
+		Details: map[string]any{
+			"details": []any{map[string]any{"code": "INVALID", "message": "Invalid filter"}},
+		},
+	})
+	if output.Error == nil || output.Error.Type != "apple_api_error" || output.Error.HTTPStatus != 400 || output.Error.Code != "INVALID_VALUE" {
+		t.Fatalf("output=%#v", output)
+	}
+	if !strings.Contains(output.Summary, "HTTP 400 (INVALID_VALUE)") {
+		t.Fatalf("summary=%q", output.Summary)
+	}
+	if output.Error.Message != "Invalid selector value" || output.Error.Details == nil || output.Error.ResponseFormat != "non_json" {
+		t.Fatalf("structured diagnostics missing: %#v", output.Error)
 	}
 }
 

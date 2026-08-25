@@ -1,7 +1,7 @@
 {
   "apiFamily": "Apple Ads Platform API",
   "apiVersion": "v1",
-  "productVersion": "0.2.0",
+  "productVersion": "0.2.1",
   "legacyV5": false,
   "appleMaps": false,
   "maximumPageSize": 200,
@@ -35,7 +35,11 @@
       "area": "suggestions-insights",
       "paths": ["POST /suggestions/categories/query", "POST /suggestions/keywords/query", "POST /suggestions/phrases/query", "POST /suggestions/target-cpas/query", "POST /insights/apps/impression-share/query", "POST /insights/apps/search-term-popularity/query"],
       "classification": "read",
-      "status": "implemented"
+      "status": "implemented",
+      "knownLimitations": [
+        "Apple may return HTTP 500 for documented phrase and category SUGGESTION queries",
+        "Apple may return HTTP 400 for impression share on accounts without recent delivery and may omit an error code or diagnostic details; public reproductions have also reported INVALID_VALUE, but the exact prerequisite is not documented"
+      ]
     },
     {
       "area": "reports",

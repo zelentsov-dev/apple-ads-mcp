@@ -127,7 +127,7 @@ func TestAppleErrorAndMalformedJSON(t *testing.T) {
 	})
 	t.Run("server details redacted", func(t *testing.T) {
 		err := apiError(http.StatusInternalServerError, map[string]any{
-			"code":    "INTERNAL",
+			"code":    "INTERNAL\nINJECTED",
 			"message": "sensitive upstream message",
 			"details": []any{map[string]any{"message": "sensitive detail"}},
 		})
@@ -137,6 +137,46 @@ func TestAppleErrorAndMalformedJSON(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), "sensitive") {
 			t.Fatalf("server details leaked: %v", err)
+		}
+		if apiErr.Code != "INTERNAL INJECTED" || apiErr.Details == nil || apiErr.Details["code"] != "INTERNAL INJECTED" {
+			t.Fatalf("safe server code missing: %#v", apiErr)
+		}
+		if _, exists := apiErr.Details["details"]; exists {
+			t.Fatalf("server details leaked: %#v", apiErr.Details)
+		}
+	})
+	t.Run("client error diagnostics bounded", func(t *testing.T) {
+		details := make([]any, 25)
+		for index := range details {
+			details[index] = map[string]any{
+				"code":    strings.Repeat("C", 140),
+				"message": "invalid\nvalue " + strings.Repeat("m", 1100),
+				"info":    map[string]any{"field\rname": strings.Repeat("v", 1100)},
+			}
+		}
+		err := apiError(http.StatusBadRequest, map[string]any{
+			"code":    strings.Repeat("X", 140),
+			"message": "bad\nrequest " + strings.Repeat("m", 1100),
+			"details": details,
+		})
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) {
+			t.Fatalf("error=%#v", err)
+		}
+		if len([]rune(apiErr.Code)) != 128 || len([]rune(apiErr.Message)) != 1024 || strings.ContainsAny(apiErr.Code+apiErr.Message, "\r\n") {
+			t.Fatalf("unbounded error: code=%q messageLength=%d", apiErr.Code, len([]rune(apiErr.Message)))
+		}
+		safeDetails, ok := apiErr.Details["details"].([]any)
+		if !ok || len(safeDetails) != 20 {
+			t.Fatalf("details=%#v", apiErr.Details)
+		}
+		first := safeDetails[0].(map[string]any)
+		if len([]rune(first["code"].(string))) != 128 || len([]rune(first["message"].(string))) != 1024 {
+			t.Fatalf("detail not bounded: %#v", first)
+		}
+		info := first["info"].(map[string]string)
+		if _, exists := info["field name"]; !exists || len([]rune(info["field name"])) != 1024 {
+			t.Fatalf("info not sanitized: %#v", info)
 		}
 	})
 	t.Run("malformed", func(t *testing.T) {
@@ -160,8 +200,20 @@ func TestAppleErrorAndMalformedJSON(t *testing.T) {
 		if !errors.As(err, &apiErr) || apiErr.HTTPStatus != http.StatusNotFound || apiErr.Message != http.StatusText(http.StatusNotFound) {
 			t.Fatalf("error=%#v", err)
 		}
-		if strings.Contains(err.Error(), "<html>") || apiErr.Details != nil {
+		if strings.Contains(err.Error(), "<html>") || apiErr.Details != nil || apiErr.ResponseFormat != "non_json" {
 			t.Fatalf("raw response body leaked: %v", err)
+		}
+	})
+	t.Run("empty HTTP error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+		}))
+		defer server.Close()
+		client := testClient(t, server, &fakeTokens{value: "token"})
+		_, err := client.Do(context.Background(), "", ACLs())
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.HTTPStatus != http.StatusBadRequest || apiErr.ResponseFormat != "empty" {
+			t.Fatalf("error=%#v", err)
 		}
 	})
 }

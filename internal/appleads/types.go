@@ -12,11 +12,12 @@ import (
 const BaseURL = "https://api.ads.apple.com/v1/"
 
 type APIError struct {
-	HTTPStatus int            `json:"httpStatus"`
-	Code       string         `json:"code,omitempty"`
-	Message    string         `json:"message"`
-	Details    map[string]any `json:"details,omitempty"`
-	Retryable  bool           `json:"retryable"`
+	HTTPStatus     int            `json:"httpStatus"`
+	Code           string         `json:"code,omitempty"`
+	Message        string         `json:"message"`
+	Details        map[string]any `json:"details,omitempty"`
+	ResponseFormat string         `json:"responseFormat,omitempty"`
+	Retryable      bool           `json:"retryable"`
 }
 
 func (e *APIError) Error() string {

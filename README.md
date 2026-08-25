@@ -13,7 +13,7 @@ Apple Ads MCP is independent open-source software. It is not affiliated with, en
 
 ## Current release
 
-`v0.2.0` is the current release. It adds typed App Store campaign operations, bounded inventory queries, bulk keyword workflows, recommendation actions with hard caps, and centralized placement validation.
+`v0.2.1` is the current release. It fixes specialized ad-group bid and CPA-cap previews, hardens bounded structured Apple error diagnostics, and adds full PAUSED operator acceptance. It includes all v0.2 capabilities: typed App Store campaign operations, bounded inventory queries, bulk keyword workflows, recommendation actions with hard caps, and centralized placement validation.
 
 The release supports the four App Store placements exposed by Apple:
 
@@ -73,10 +73,10 @@ Download the archive for your platform from [GitHub Releases](https://github.com
 Apple silicon example:
 
 ```bash
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.2.0/apple-ads-mcp_0.2.0_darwin_arm64.tar.gz
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.2.0/checksums.txt
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.2.1/apple-ads-mcp_0.2.1_darwin_arm64.tar.gz
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.2.1/checksums.txt
 shasum -a 256 -c checksums.txt --ignore-missing
-tar -xzf apple-ads-mcp_0.2.0_darwin_arm64.tar.gz
+tar -xzf apple-ads-mcp_0.2.1_darwin_arm64.tar.gz
 sudo install -m 0755 apple-ads-mcp /usr/local/bin/apple-ads-mcp
 ```
 
@@ -85,14 +85,14 @@ sudo install -m 0755 apple-ads-mcp /usr/local/bin/apple-ads-mcp
 Each release publishes a checksum-pinned formula:
 
 ```bash
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.2.0/apple-ads-mcp.rb
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.2.1/apple-ads-mcp.rb
 brew install --formula ./apple-ads-mcp.rb
 ```
 
 ### OCI image
 
 ```bash
-docker pull ghcr.io/zelentsov-dev/apple-ads-mcp:0.2.0
+docker pull ghcr.io/zelentsov-dev/apple-ads-mcp:0.2.1
 ```
 
 The image runs `serve --stdio` by default. Mount `accounts.json` and its referenced private key read-only.
@@ -214,9 +214,18 @@ This does not change anything by itself. Every mutation still needs explicit `pr
 - Reports can lag and remain empty until delivery occurs.
 - Trial and subscription attribution belongs to your attribution stack; the Apple Ads Platform API alone does not prove keyword-to-trial attribution.
 
+### Known Apple API responses
+
+As of 2026-08-25, the documented v1 request shapes used by this server have produced two repeatable upstream behaviors during live acceptance:
+
+- `phrase_suggestions` and `category_suggestions` may return Apple HTTP `500` for a `SUGGESTION` query even when `keyword_suggestions` and `target_cpa_suggestions` work for the same owned app.
+- `impression_share` may return Apple HTTP `400` on a cold or fully paused account. An owner-controlled acceptance account supplied no code or diagnostic details; public reproductions have also reported code `INVALID_VALUE`. Missing recent delivery may be relevant, but it is not a confirmed Apple prerequisite or workaround.
+
+The server returns these as bounded structured Apple errors, including whether the upstream body was empty or non-JSON; it does not convert them into empty or successful results. The request shapes match the [current Apple Ads Platform API](https://developer.apple.com/documentation/apple-ads-platform-api) and the [official Apple Java client](https://github.com/apple/apple-ads-platform-api-java). Comparable public v1 reproductions are recorded in [App Store Connect CLI PR #2057](https://github.com/rorkai/App-Store-Connect-CLI/pull/2057) and [PR #2020](https://github.com/rorkai/App-Store-Connect-CLI/pull/2020). Recheck after Apple changes the API or the account has meaningful delivery history.
+
 ## Compatibility
 
-v0.2.0 keeps existing tool names but replaces open mutation payloads with resource-specific schemas. Unknown fields are rejected. See [v0.2 migration notes](docs/MIGRATION-v0.2.md) before upgrading an automated client.
+v0.2 keeps existing tool names but replaces open mutation payloads with resource-specific schemas. Unknown fields are rejected. See [v0.2 migration notes](docs/MIGRATION-v0.2.md) before upgrading an automated client.
 
 The public tool schema is not frozen before v1.0. API-family scope and operation status are tracked in the [machine-readable operation matrix](api-contract/operations.json). The official Java client baseline and App Store endpoint inventory are tracked in [upstream-baseline.json](api-contract/upstream-baseline.json).
 

@@ -142,3 +142,19 @@ func TestCreateVerificationQueryUsesExplicitParent(t *testing.T) {
 		t.Fatalf("filter=%#v", filters[0])
 	}
 }
+
+func TestAdGroupSpecializedMoneyPayloadsAreJSONObjects(t *testing.T) {
+	money := appleads.Money{Amount: "0.25", Currency: "USD"}
+	for name, build := range map[string]func(appleads.Money) (map[string]any, error){
+		"bid":     adGroupBidUpdatePayload,
+		"cpa cap": adGroupCPACapUpdatePayload,
+	} {
+		payload, err := build(money)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if err := validateTypedResourcePayload("adgroups", false, payload); err != nil {
+			t.Fatalf("%s payload: %v", name, err)
+		}
+	}
+}

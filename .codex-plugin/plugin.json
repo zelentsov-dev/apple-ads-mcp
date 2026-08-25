@@ -1,6 +1,6 @@
 {
   "name": "apple-ads-mcp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Local-first Apple Ads Platform API operator with typed inventory and receipt-gated App Store campaign management.",
   "author": {
     "name": "Alexey Zelentsov",

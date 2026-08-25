@@ -27,6 +27,7 @@ Run the v0.2 mutation acceptance only against an operator-controlled account:
 APPLE_ADS_PROFILE=profile-name \
 APPLE_ADS_AD_ACCOUNT_ID=account-id \
 APPLE_ADS_LIVE_ADAM_ID=app-adam-id \
+APPLE_ADS_LIVE_APP_QUERY=app-name \
 APPLE_ADS_LIVE_STOREFRONT=US \
 APPLE_ADS_ALLOW_WRITES=true \
 APPLE_ADS_LIVE_WRITE=CREATE_PAUSED_FIXTURES \
@@ -34,3 +35,18 @@ go test -tags=live_write ./internal/live -run '^TestMCPV02PausedFixtures$' -coun
 ```
 
 The test caps fixture budget and bids, creates only `PAUSED` objects, never retries an ambiguous write, verifies every receipt, and leaves fixtures in place for inspection. An ineligible placement is recorded as `not_eligible` rather than treated as a product failure.
+
+After the fixtures exist, run the complete operator acceptance against the same owner-controlled account:
+
+```bash
+APPLE_ADS_PROFILE=profile-name \
+APPLE_ADS_AD_ACCOUNT_ID=account-id \
+APPLE_ADS_LIVE_ADAM_ID=app-adam-id \
+APPLE_ADS_LIVE_APP_QUERY=app-name \
+APPLE_ADS_LIVE_STOREFRONT=US \
+APPLE_ADS_ALLOW_WRITES=true \
+APPLE_ADS_LIVE_WRITE=FULL_PAUSED_ACCEPTANCE \
+go test -tags=live_write ./internal/live -run '^TestMCPV02OperatorAcceptance$' -count=1
+```
+
+This acceptance enumerates the full MCP catalog, runs the read and preview matrices, applies bounded changes only to PAUSED fixtures, restores the exact original budget and keyword bid, verifies receipts and readback, and finishes by checking that every fixture remains PAUSED with zero spend. Known upstream suggestion and impression-share responses must remain structured Apple errors with their expected status and any response code Apple supplies. Live identifiers and app names come only from session environment variables and must never be committed.

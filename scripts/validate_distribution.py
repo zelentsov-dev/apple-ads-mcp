@@ -33,6 +33,7 @@ def main() -> None:
     require("apple-ads" in mcp["mcpServers"], "apple-ads MCP server missing")
     require(mcp["mcpServers"]["apple-ads"]["args"] == ["serve", "--stdio"], "stdio command mismatch")
     require(registry["name"] == "io.github.zelentsov-dev/apple-ads-mcp", "registry name mismatch")
+    require(0 < len(registry["description"]) <= 100, "registry description must contain 1 to 100 characters")
     require(registry["version"] == version, "registry version mismatch")
     require(registry["packages"][0]["identifier"].endswith(f":v{version}"), "registry package version mismatch")
     require(operations["productVersion"] == version, "operation matrix version mismatch")

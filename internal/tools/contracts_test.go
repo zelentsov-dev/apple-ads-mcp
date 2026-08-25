@@ -12,6 +12,9 @@ func TestToolCatalogIsUniqueAndClassified(t *testing.T) {
 		if item.Name == "raw_request" {
 			t.Fatal("raw_request must not exist")
 		}
+		if strings.Contains(item.Name, "delete") || strings.Contains(item.Name, "shared_budget_create") || strings.Contains(item.Name, "shared_budget_update") || strings.Contains(item.Name, "ad_account_update") {
+			t.Fatalf("out-of-scope mutation tool exposed: %s", item.Name)
+		}
 		if item.Name == "" || item.Description == "" || item.Class == "" {
 			t.Fatalf("incomplete tool spec: %+v", item)
 		}
@@ -25,7 +28,7 @@ func TestToolCatalogIsUniqueAndClassified(t *testing.T) {
 			t.Fatalf("tool %q has unknown class %q", item.Name, item.Class)
 		}
 	}
-	if len(all) < 40 {
+	if len(all) < 85 {
 		t.Fatalf("unexpectedly small tool catalog: %d", len(all))
 	}
 }

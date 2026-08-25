@@ -12,7 +12,7 @@ on:
       version:
         description: Released semantic version without a v prefix
         required: true
-        default: "0.1.0"
+        default: "0.2.0"
 
 permissions:
   contents: read
@@ -36,6 +36,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          PLUGIN_VERSION="$(jq --raw-output '.version' .codex-plugin/plugin.json)"
+          test "$RELEASE_VERSION" = "$PLUGIN_VERSION"
           TAG_NAME="v${RELEASE_VERSION}"
           TAG_COMMIT="$(git rev-parse --verify "refs/tags/${TAG_NAME}^{commit}")"
           git merge-base --is-ancestor "$TAG_COMMIT" origin/main

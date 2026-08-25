@@ -1,23 +1,102 @@
 {
   "apiFamily": "Apple Ads Platform API",
   "apiVersion": "v1",
+  "productVersion": "0.2.0",
   "legacyV5": false,
   "appleMaps": false,
+  "maximumPageSize": 200,
+  "maximumBulkItems": 100,
   "operations": [
-    {"area": "access", "paths": ["GET /me", "GET /acls", "GET /orgs/{id}"], "phase": "v0.1", "status": "implemented"},
-    {"area": "apps", "paths": ["GET /search/apps", "GET /apps/{adamId}", "POST /eligibilities/apps/query"], "phase": "v0.1", "status": "implemented"},
-    {"area": "suggestions", "paths": ["POST /suggestions/categories/query", "POST /suggestions/keywords/query", "POST /suggestions/phrases/query", "POST /suggestions/target-cpas/query"], "phase": "v0.1", "status": "implemented"},
-    {"area": "insights", "paths": ["POST /insights/apps/impression-share/query", "POST /insights/apps/search-term-popularity/query"], "phase": "v0.1", "status": "implemented"},
-    {"area": "reports", "paths": ["POST /reports/apps/campaigns/query", "POST /reports/apps/adgroups/query", "POST /reports/apps/ads/query", "POST /reports/apps/keywords/query", "POST /reports/apps/searchterms/query"], "phase": "v0.1", "status": "implemented"},
-    {"area": "recommendations", "paths": ["POST /recommendations/daily-budgets/query", "POST /recommendations/target-cpas/query"], "phase": "v0.1", "status": "read-only-implemented"},
-    {"area": "change-history", "paths": ["POST /change-history/query"], "phase": "v0.1", "status": "implemented"},
-    {"area": "campaigns", "paths": ["POST /campaigns", "GET /campaigns/{id}", "PUT /campaigns/{id}", "POST /campaigns/query"], "phase": "v0.1", "status": "live-preview-apply-verified"},
-    {"area": "adgroups", "paths": ["POST /adgroups", "GET /adgroups/{id}", "PUT /adgroups/{id}", "POST /adgroups/query"], "phase": "v0.1", "status": "live-preview-apply-verified"},
-    {"area": "keywords", "paths": ["POST /keywords", "GET /keywords/{id}", "PUT /keywords/{id}", "POST /keywords/query", "POST /negative-keywords", "GET /negative-keywords/{id}", "PUT /negative-keywords/{id}", "POST /negative-keywords/query"], "phase": "v0.1", "status": "live-preview-apply-verified"},
-    {"area": "ads-and-creatives", "paths": ["POST/GET/PUT /ads", "POST/GET/PUT /creatives"], "phase": "v0.3", "status": "preview-apply-foundation"},
-    {"area": "product-pages", "paths": ["GET /product-pages/{id}", "POST /product-pages/query", "POST /product-pages/locale-details/query"], "phase": "v0.3", "status": "read-only-implemented"},
-    {"area": "shared-budgets", "paths": ["GET /shared-budgets/{id}"], "phase": "v0.3", "status": "read-only-implemented"},
-    {"area": "budget-orders", "paths": [], "phase": "v0.3", "status": "not-documented-by-platform-api-v1"},
-    {"area": "deletion-and-recommendation-actions", "paths": ["DELETE operations", "recommendation apply/dismiss operations"], "phase": "v0.3", "status": "intentionally-not-exposed-yet"}
+    {
+      "area": "access-readiness",
+      "paths": ["GET /me", "GET /acls", "GET /orgs/{id}", "GET /ad-accounts/{id}", "GET /advertiser-resources"],
+      "classification": "read",
+      "status": "implemented"
+    },
+    {
+      "area": "apps-metadata-eligibility",
+      "paths": ["GET /search/apps", "GET /apps/{adamId}", "POST /eligibilities/apps/query", "POST /apps/{adamId}/locale-details/query", "POST /metadata/apps/supported-languages/query", "GET|POST /search/geo"],
+      "classification": "read",
+      "status": "implemented"
+    },
+    {
+      "area": "diagnostics-history",
+      "paths": ["POST /rejection-reasons/apps/query", "GET /rejection-reasons/apps/{id}", "POST /change-history/query", "GET /change-history/{id}", "GET /campaigns/{id}/legacy-app-limited-status-reason-details"],
+      "classification": "read",
+      "status": "implemented"
+    },
+    {
+      "area": "inventory-query",
+      "paths": ["POST /campaigns/query", "POST /adgroups/query", "POST /keywords/query", "POST /negative-keywords/query", "POST /ads/query", "POST /creatives/query", "POST /shared-budgets/query"],
+      "classification": "read",
+      "status": "implemented"
+    },
+    {
+      "area": "suggestions-insights",
+      "paths": ["POST /suggestions/categories/query", "POST /suggestions/keywords/query", "POST /suggestions/phrases/query", "POST /suggestions/target-cpas/query", "POST /insights/apps/impression-share/query", "POST /insights/apps/search-term-popularity/query"],
+      "classification": "read",
+      "status": "implemented"
+    },
+    {
+      "area": "reports",
+      "paths": ["POST /reports/apps/campaigns/query", "POST /reports/apps/adgroups/query", "POST /reports/apps/ads/query", "POST /reports/apps/keywords/query", "POST /reports/apps/searchterms/query"],
+      "classification": "read",
+      "status": "implemented-with-typed-selectors"
+    },
+    {
+      "area": "recommendations-read",
+      "paths": ["POST /recommendations/daily-budgets/query", "POST /recommendations/target-cpas/query"],
+      "classification": "read",
+      "status": "implemented"
+    },
+    {
+      "area": "campaign-management",
+      "paths": ["POST /campaigns", "GET /campaigns/{id}", "PUT /campaigns/{id}"],
+      "classification": "mutation",
+      "status": "receipt-gated"
+    },
+    {
+      "area": "adgroup-management",
+      "paths": ["POST /adgroups", "GET /adgroups/{id}", "PUT /adgroups/{id}"],
+      "classification": "mutation",
+      "status": "receipt-gated"
+    },
+    {
+      "area": "keyword-management",
+      "paths": ["POST /keywords", "GET /keywords/{id}", "PUT /keywords/{id}", "POST /negative-keywords", "GET /negative-keywords/{id}", "PUT /negative-keywords/{id}"],
+      "classification": "mutation",
+      "status": "receipt-gated"
+    },
+    {
+      "area": "bulk-keywords",
+      "paths": ["POST /keywords/bulk-create", "POST /keywords/bulk-update", "POST /negative-keywords/bulk-create", "POST /negative-keywords/bulk-update"],
+      "classification": "mutation",
+      "status": "receipt-gated-partial-aware"
+    },
+    {
+      "area": "ads-creatives",
+      "paths": ["POST /ads", "GET /ads/{id}", "PUT /ads/{id}", "POST /creatives", "GET /creatives/{id}", "PUT /creatives/{id}", "GET /product-pages/{id}", "POST /product-pages/query", "POST /product-pages/locale-details/query"],
+      "classification": "mixed",
+      "status": "implemented-placement-validated",
+      "constraints": ["explicit ads are not exposed for APPSTORE_SEARCH_RESULTS", "default product page creatives are queried and reused because Apple allows one per app and ad account"]
+    },
+    {
+      "area": "recommendation-actions",
+      "paths": ["POST /recommendations/daily-budgets/apply", "POST /recommendations/daily-budgets/dismiss", "POST /recommendations/target-cpas/apply", "POST /recommendations/target-cpas/dismiss"],
+      "classification": "mutation",
+      "status": "receipt-gated-capped"
+    },
+    {
+      "area": "shared-budgets",
+      "paths": ["GET /shared-budgets/{id}", "POST /shared-budgets/query"],
+      "classification": "read",
+      "status": "implemented-read-only"
+    },
+    {
+      "area": "deferred-mutations",
+      "paths": ["DELETE operations", "POST|PUT /ad-accounts", "POST|PUT /shared-budgets", "budget orders"],
+      "classification": "mutation",
+      "status": "not-exposed"
+    }
   ]
 }

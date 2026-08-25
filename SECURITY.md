@@ -16,4 +16,4 @@ OAuth tokens and operation receipts exist only in process memory. Logs never inc
 
 ## Write safety
 
-A write requires Apple authorization, the server flag, profile opt-in, a specialized preview, a non-expired single-use receipt, and a matching current-state hash. A timed-out write is reported as `committed_unverified` and is never retried automatically.
+A write requires Apple authorization, the server flag, profile opt-in, a specialized preview, a non-expired single-use receipt, and a matching current-state hash. Bulk operations bind the entire scoped inventory and report item-level outcomes without promising rollback. Recommendation actions require a currency-matched hard cap. A timed-out write is reported as `committed_unverified` and is never retried automatically.

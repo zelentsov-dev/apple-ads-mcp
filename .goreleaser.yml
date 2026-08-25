@@ -30,6 +30,8 @@ archives:
       - .mcp.json
       - .codex-plugin/plugin.json
       - skills/apple-ads-operator/**
+      - docs/**
+      - api-contract/**
 
 checksum:
   name_template: checksums.txt
@@ -49,11 +51,11 @@ release:
   mode: replace
   make_latest: true
   header: |
-    Apple Ads MCP {{ .Tag }} is the first public release of a local-first MCP server for Apple Ads Platform API v1.
+    Apple Ads MCP {{ .Tag }} expands the local-first MCP server into a safe App Store campaign operator for Apple Ads Platform API v1.
 
-    It provides typed research, reporting, auditing, and receipt-gated App Store campaign management tools. The server is read-only by default, keeps credentials local, and never exposes a raw HTTP passthrough.
+    It adds typed account and campaign inventory, all four App Store placement validations, bulk keyword workflows, capped recommendation actions, item-level verification, and receipt-gated campaign management. The server is read-only by default, keeps credentials local, and never exposes a raw HTTP passthrough.
 
-    Live acceptance verified paused campaign, ad-group, targeting-keyword, and negative-keyword creation through preview, single-use receipt, apply, and direct API readback with no ad spend.
+    PAUSED live acceptance verifies eligible placements through preview, single-use receipt, apply, inventory readback, and zero-delivery checks without exposing account data in the release.
   footer: |
     Archives include SHA-256 checksums and SPDX SBOMs. See the README for installation, Apple Ads onboarding, safety controls, and known platform behavior.
 

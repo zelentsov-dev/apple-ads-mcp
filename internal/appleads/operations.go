@@ -37,6 +37,18 @@ type SearchAppsParams struct {
 func Me() Operation   { return unscopedRead(http.MethodGet, "me", nil, nil) }
 func ACLs() Operation { return unscopedRead(http.MethodGet, "acls", nil, nil) }
 
+func AdAccount(id string) (Operation, error) {
+	path, err := resourcePath("ad-accounts", id)
+	if err != nil {
+		return Operation{}, err
+	}
+	return read(http.MethodGet, path, nil, nil), nil
+}
+
+func AdvertiserResources() Operation {
+	return unscopedRead(http.MethodGet, "advertiser-resources", url.Values{"resourceType": {"CONTENT_PROVIDER"}}, nil)
+}
+
 func Org(id string) (Operation, error) {
 	path, err := resourcePath("orgs", id)
 	if err != nil {
@@ -103,6 +115,18 @@ func App(adamID string) (Operation, error) {
 	return read(http.MethodGet, path, nil, nil), nil
 }
 
+func AppLocaleDetails(adamID string, body any) (Operation, error) {
+	path, err := resourcePath("apps", adamID)
+	if err != nil {
+		return Operation{}, err
+	}
+	return read(http.MethodPost, path+"/locale-details/query", nil, body), nil
+}
+
+func SupportedAppLanguages(body any) Operation {
+	return read(http.MethodPost, "metadata/apps/supported-languages/query", nil, body)
+}
+
 func AppsEligibility(body any) Operation {
 	return read(http.MethodPost, "eligibilities/apps/query", nil, body)
 }
@@ -162,6 +186,119 @@ func Recommendation(kind string, body any) (Operation, error) {
 
 func ChangeHistory(body any) Operation {
 	return read(http.MethodPost, "change-history/query", nil, body)
+}
+
+func ChangeHistoryDetail(detailID string, offset, limit int) (Operation, error) {
+	path, err := resourcePath("change-history", detailID)
+	if err != nil {
+		return Operation{}, err
+	}
+	if offset < 0 {
+		return Operation{}, errors.New("offset must be non-negative")
+	}
+	if limit < 1 || limit > 200 {
+		return Operation{}, errors.New("limit must be between 1 and 200")
+	}
+	query := url.Values{"offset": {strconv.Itoa(offset)}, "limit": {strconv.Itoa(limit)}}
+	return read(http.MethodGet, path, query, nil), nil
+}
+
+func CampaignStatusReasonDetails(campaignID string) (Operation, error) {
+	path, err := resourcePath("campaigns", campaignID)
+	if err != nil {
+		return Operation{}, err
+	}
+	return read(http.MethodGet, path+"/legacy-app-limited-status-reason-details", nil, nil), nil
+}
+
+func RejectionReasonsQuery(body any) Operation {
+	return read(http.MethodPost, "rejection-reasons/apps/query", nil, body)
+}
+
+func RejectionReason(id string) (Operation, error) {
+	path, err := resourcePath("rejection-reasons/apps", id)
+	if err != nil {
+		return Operation{}, err
+	}
+	return read(http.MethodGet, path, nil, nil), nil
+}
+
+type GeoSearchParams struct {
+	Query       string
+	Entity      string
+	CountryCode string
+	Eligible    bool
+	Offset      int
+	PageSize    int
+}
+
+func AppStoreGeoSearch(params GeoSearchParams) (Operation, error) {
+	queryText := strings.TrimSpace(params.Query)
+	if queryText == "" {
+		queryText = "*"
+	}
+	if queryText != "*" && len([]rune(queryText)) < 2 {
+		return Operation{}, errors.New("geo query must contain at least two characters or be *")
+	}
+	if params.Offset < 0 {
+		return Operation{}, errors.New("offset must be non-negative")
+	}
+	if params.PageSize == 0 {
+		params.PageSize = 20
+	}
+	if params.PageSize < 1 || params.PageSize > 200 {
+		return Operation{}, errors.New("pageSize must be between 1 and 200")
+	}
+	entity := strings.TrimSpace(params.Entity)
+	if entity != "" && entity != "Country" && entity != "AdminArea" && entity != "Locality" {
+		return Operation{}, errors.New("entity must be Country, AdminArea, or Locality")
+	}
+	country := strings.ToUpper(strings.TrimSpace(params.CountryCode))
+	if country != "" && (len(country) != 2 || country[0] < 'A' || country[0] > 'Z' || country[1] < 'A' || country[1] > 'Z') {
+		return Operation{}, errors.New("countryCode must be an ISO 3166-1 alpha-2 code")
+	}
+	query := url.Values{
+		"supplySource": {"APPSTORE"},
+		"query":        {queryText},
+		"offset":       {strconv.Itoa(params.Offset)},
+		"pageSize":     {strconv.Itoa(params.PageSize)},
+		"eligible":     {strconv.FormatBool(params.Eligible)},
+	}
+	if entity != "" {
+		query.Set("entity", entity)
+	}
+	if country != "" {
+		query.Set("countrycode", country)
+	}
+	return read(http.MethodGet, "search/geo", query, nil), nil
+}
+
+func RecommendationAction(kind, action string, body any) (Operation, error) {
+	if kind != "daily-budgets" && kind != "target-cpas" {
+		return Operation{}, fmt.Errorf("unsupported recommendation kind %q", kind)
+	}
+	if action != "apply" && action != "dismiss" {
+		return Operation{}, fmt.Errorf("unsupported recommendation action %q", action)
+	}
+	cloned, err := cloneJSONValue(body)
+	if err != nil {
+		return Operation{}, err
+	}
+	return write(http.MethodPost, "recommendations/"+kind+"/"+action, cloned), nil
+}
+
+func BulkResource(resource, action string, body any) (Operation, error) {
+	if resource != "keywords" && resource != "negative-keywords" {
+		return Operation{}, fmt.Errorf("unsupported bulk resource %q", resource)
+	}
+	if action != "create" && action != "update" {
+		return Operation{}, fmt.Errorf("unsupported bulk action %q", action)
+	}
+	cloned, err := cloneJSONValue(body)
+	if err != nil {
+		return Operation{}, err
+	}
+	return write(http.MethodPost, resource+"/bulk-"+action, cloned), nil
 }
 
 func ProductPage(id string) (Operation, error) {
@@ -291,7 +428,7 @@ func normalizeMutationIDs(value any, key string) any {
 
 func numericMutationIDKey(key string) bool {
 	switch key {
-	case "id", "adamId", "campaignId", "adGroupId", "keywordId", "negativeKeywordId", "sharedBudgetId", "creativeId", "adId", "orgId", "adAccountId", "parentOrgId":
+	case "id", "adamId", "campaignId", "adGroupId", "keywordId", "negativeKeywordId", "sharedBudgetId", "creativeId", "adId", "orgId", "adAccountId", "parentOrgId", "correlationId":
 		return true
 	default:
 		return false

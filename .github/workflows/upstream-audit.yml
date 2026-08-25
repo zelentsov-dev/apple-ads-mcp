@@ -19,6 +19,9 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go list -m -u github.com/modelcontextprotocol/go-sdk github.com/golang-jwt/jwt/v5
-      - run: curl --fail --silent --show-error --location https://api.github.com/repos/apple/apple-ads-platform-api-java/releases/latest
+      - name: Compare official Java client and App Store endpoint inventory
+        run: python3 scripts/audit_upstream.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - run: curl --fail --silent --show-error --head https://developer.apple.com/documentation/apple-ads-platform-api
       - run: python3 scripts/validate_distribution.py

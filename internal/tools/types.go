@@ -24,6 +24,11 @@ type AccountInput struct {
 	AdAccountID string `json:"adAccountId" jsonschema:"Apple Ads ad account ID"`
 }
 
+type AccountHealthInput struct {
+	AccountInput
+	AdamID string `json:"adamId,omitempty" jsonschema:"optional App Store Adam ID to verify ownership"`
+}
+
 type OrgInput struct {
 	Profile string `json:"profile" jsonschema:"local Apple Ads profile name"`
 	OrgID   string `json:"orgId" jsonschema:"Apple Ads organization ID"`
@@ -54,6 +59,44 @@ type ResourceInput struct {
 	ID string `json:"id" jsonschema:"resource ID as a string"`
 }
 
+type AppLocaleDetailsInput struct {
+	QueryInput
+	AdamID string `json:"adamId" jsonschema:"App Store Adam ID as a string"`
+}
+
+type ChangeHistoryDetailInput struct {
+	AccountInput
+	DetailID string `json:"detailId" jsonschema:"change detail ID"`
+	Offset   int    `json:"offset,omitempty" jsonschema:"zero-based result offset"`
+	Limit    int    `json:"limit,omitempty" jsonschema:"result limit from 1 to 200"`
+}
+
+type CampaignStatusReasonInput struct {
+	AccountInput
+	CampaignID string `json:"campaignId" jsonschema:"campaign ID as a string"`
+}
+
+type RejectionReasonInput struct {
+	AccountInput
+	RejectionReasonID string `json:"rejectionReasonId" jsonschema:"app rejection reason ID as a string"`
+}
+
+type GeoSearchInput struct {
+	AccountInput
+	Query       string `json:"query,omitempty" jsonschema:"geo search text with at least two characters or *"`
+	Entity      string `json:"entity,omitempty" jsonschema:"Country, AdminArea, or Locality"`
+	CountryCode string `json:"countryCode,omitempty" jsonschema:"ISO 3166-1 alpha-2 country code"`
+	Eligible    bool   `json:"eligible,omitempty" jsonschema:"exclude soft-blocked geos"`
+	Offset      int    `json:"offset,omitempty" jsonschema:"zero-based result offset"`
+	PageSize    int    `json:"pageSize,omitempty" jsonschema:"page size from 1 to 200"`
+}
+
+type CampaignInventoryInput struct {
+	AccountInput
+	CampaignID string `json:"campaignId" jsonschema:"campaign ID as a string"`
+	PageSize   int    `json:"pageSize,omitempty" jsonschema:"maximum children per resource from 1 to 200"`
+}
+
 type QueryInput struct {
 	AccountInput
 	Filters    []QueryFilterInput `json:"filters,omitempty" jsonschema:"endpoint-specific filter conditions"`
@@ -68,7 +111,7 @@ type QueryInput struct {
 type QueryFilterInput struct {
 	Field      string `json:"field" jsonschema:"Apple filter field name"`
 	Operator   string `json:"operator" jsonschema:"Apple filter operator such as EQUALS or IN"`
-	Value      any    `json:"value" jsonschema:"scalar or array value accepted by the endpoint"`
+	Value      any    `json:"value,omitempty" jsonschema:"scalar or array value accepted by the endpoint; omit for IS_NULL and IS_NOT_NULL"`
 	IgnoreCase *bool  `json:"ignoreCase,omitempty" jsonschema:"case-insensitive string comparison when supported"`
 }
 
@@ -155,11 +198,43 @@ func validateTextValues(name string, values []string, maxCount, maxLength int) e
 }
 
 func success(summary string, result appleads.Result) Output {
-	data, truncated := boundData(result.Data)
+	data, truncated := boundData(sanitizePublicData(result.Data))
 	if truncated {
 		summary += "; response arrays were capped at 200 items"
 	}
 	return Output{Summary: summary, Data: data, Pagination: &result.Pagination, RateLimit: &result.RateLimit}
+}
+
+func sanitizePublicData(value any) any {
+	switch typed := value.(type) {
+	case []any:
+		result := make([]any, len(typed))
+		for i, item := range typed {
+			result[i] = sanitizePublicData(item)
+		}
+		return result
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for key, item := range typed {
+			if sensitivePublicKey(key) {
+				continue
+			}
+			result[key] = sanitizePublicData(item)
+		}
+		return result
+	default:
+		return value
+	}
+}
+
+func sensitivePublicKey(key string) bool {
+	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(key))
+	return strings.Contains(normalized, "invoicedetail") ||
+		strings.Contains(normalized, "invoicecontact") ||
+		strings.Contains(normalized, "billingemail") ||
+		strings.Contains(normalized, "billingcontact") ||
+		strings.HasPrefix(normalized, "primarybuyer") ||
+		strings.HasPrefix(normalized, "buyeremail")
 }
 
 func boundData(value any) (any, bool) {
@@ -289,11 +364,136 @@ func (input QueryInput) boundedRequest() (map[string]any, error) {
 	return boundedQueryRequest(request)
 }
 
+func (input QueryInput) reportRequest(kind string) (map[string]any, error) {
+	request, err := input.boundedRequest()
+	if err != nil {
+		return nil, err
+	}
+	allowed, ok := reportAllowedFields(kind)
+	if !ok {
+		return nil, fmt.Errorf("unsupported report kind %q", kind)
+	}
+	if err := validateSelectedFields("fields", input.Fields, allowed); err != nil {
+		return nil, err
+	}
+	for _, filter := range input.Filters {
+		if _, ok := allowed[filter.Field]; !ok {
+			return nil, fmt.Errorf("filter field %q is not supported by the %s report", filter.Field, kind)
+		}
+		if !allowedFilterOperator(filter.Operator) {
+			return nil, fmt.Errorf("filter operator %q is not supported", filter.Operator)
+		}
+	}
+	for _, sorting := range input.Sorting {
+		if _, ok := allowed[sorting.Field]; !ok {
+			return nil, fmt.Errorf("sorting field %q is not supported by the %s report", sorting.Field, kind)
+		}
+		if !allowedSortOrder(sorting.Order) {
+			return nil, fmt.Errorf("sorting order %q is not supported", sorting.Order)
+		}
+	}
+	groupBy := reportGroupBy(kind)
+	if err := validateSelectedFields("groupBy", input.GroupBy, groupBy); err != nil {
+		return nil, err
+	}
+	if input.TimeRange != nil {
+		granularity := strings.ToUpper(strings.TrimSpace(input.TimeRange.Granularity))
+		timeZone := strings.ToUpper(strings.TrimSpace(input.TimeRange.TimeZone))
+		if kind == "ads" || kind == "searchterms" {
+			if granularity == "HOURLY" {
+				return nil, fmt.Errorf("HOURLY granularity is not supported by the %s report", kind)
+			}
+		}
+		if kind == "searchterms" && timeZone != "" && timeZone != "ORTZ" {
+			return nil, errors.New("search-term reports require ORTZ timezone")
+		}
+	}
+	if err := normalizeRequestIDFilters(request, map[string]struct{}{"id": {}}); err != nil {
+		return nil, err
+	}
+	return request, nil
+}
+
+func validateSelectedFields(name string, values []string, allowed map[string]struct{}) error {
+	for _, value := range values {
+		if _, ok := allowed[value]; !ok {
+			return fmt.Errorf("%s value %q is not supported", name, value)
+		}
+	}
+	return nil
+}
+
+func reportAllowedFields(kind string) (map[string]struct{}, bool) {
+	common := []string{
+		"date", "localSpend", "impressions", "taps", "ttr", "cpt", "cpm", "tapInstalls", "tapInstallCPI",
+		"totalNewDownloads", "totalRedownloads", "viewInstalls", "totalInstalls", "tapNewDownloads", "tapRedownloads",
+		"viewNewDownloads", "viewRedownloads", "totalAvgCPI", "totalInstallRate", "tapInstallRate", "tapPreOrdersPlaced",
+		"viewPreOrdersPlaced", "totalPreOrdersPlaced", "countryOrRegion", "deviceClass",
+	}
+	byKind := map[string][]string{
+		"campaigns":   {"id", "promotedObject", "promotedObjectType", "promotedObjectId", "name", "status", "deleted", "displayStatus", "modificationTime", "creationTime", "adAccountId", "systemStatus", "systemStatusReasons", "startTime", "endTime", "billingEvent", "systemStatusLimitingReasons", "targeting", "dailyBudget", "adChannelType", "bidStrategy", "gender", "ageRange", "locality", "countryCode", "adminArea", "storefront"},
+		"adgroups":    {"id", "campaignId", "adAccountId", "name", "status", "deleted", "systemStatus", "systemStatusReasons", "systemStatusLimitingReasons", "automatedKeywordsOptIn", "automatedKeywordsRequired", "pricingModel", "displayStatus", "modificationTime", "creationTime", "startTime", "endTime", "campaign", "bidStrategy", "cpaCap", "gender", "ageRange", "locality", "countryCode", "adminArea", "storefront"},
+		"ads":         {"id", "name", "deleted", "status", "systemStatus", "systemStatusReasons", "systemStatusLimitingReasons", "adAccountId", "campaignId", "adGroupId", "creationTime", "modificationTime", "displayStatus", "creative"},
+		"keywords":    {"id", "campaignId", "adAccountId", "deleted", "text", "status", "matchType", "bid", "adGroupId", "modificationTime", "creationTime", "displayStatus", "adGroup"},
+		"searchterms": {"campaignId", "adAccountId", "searchTermText", "searchTermSource", "keyword", "adGroupId", "adGroup"},
+	}
+	fields, ok := byKind[kind]
+	if !ok {
+		return nil, false
+	}
+	result := make(map[string]struct{}, len(common)+len(fields))
+	for _, value := range append(common, fields...) {
+		result[value] = struct{}{}
+	}
+	return result, true
+}
+
+func reportGroupBy(kind string) map[string]struct{} {
+	values := []string{"deviceClass", "countryOrRegion"}
+	if kind == "campaigns" || kind == "adgroups" {
+		values = append(values, "ageRange", "gender", "countryCode", "adminArea", "locality", "storefront")
+	}
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		result[value] = struct{}{}
+	}
+	return result
+}
+
+func allowedFilterOperator(value string) bool {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "EQUALS", "NOT_EQUALS", "IN", "NOT_IN", "GREATER_THAN", "GREATER_THAN_OR_EQUALS", "LESS_THAN", "LESS_THAN_OR_EQUALS", "CONTAINS", "STARTSWITH", "IS_NULL", "IS_NOT_NULL":
+		return true
+	default:
+		return false
+	}
+}
+
+func allowedSortOrder(value string) bool {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "ASC", "DESC", "ASCENDING", "DESCENDING":
+		return true
+	default:
+		return false
+	}
+}
+
 func normalizeQueryFilters(filters []QueryFilterInput) ([]QueryFilterInput, error) {
 	result := make([]QueryFilterInput, len(filters))
 	copy(result, filters)
 	for i := range result {
-		if result[i].Field != "adamId" {
+		result[i].Operator = strings.ToUpper(strings.TrimSpace(result[i].Operator))
+		if !allowedFilterOperator(result[i].Operator) {
+			return nil, fmt.Errorf("filters[%d].operator %q is not supported", i, result[i].Operator)
+		}
+		if result[i].Operator == "IS_NULL" || result[i].Operator == "IS_NOT_NULL" {
+			result[i].Value = nil
+			continue
+		}
+		if result[i].Value == nil {
+			return nil, fmt.Errorf("filters[%d].value is required for operator %s", i, result[i].Operator)
+		}
+		if !numericQueryFilterField(result[i].Field) {
 			continue
 		}
 		value, err := numericAdamID(result[i].Value)
@@ -303,6 +503,38 @@ func normalizeQueryFilters(filters []QueryFilterInput) ([]QueryFilterInput, erro
 		result[i].Value = value
 	}
 	return result, nil
+}
+
+func numericQueryFilterField(field string) bool {
+	switch field {
+	case "adamId", "campaignId", "adGroupId", "keywordId", "negativeKeywordId", "creativeId", "adId", "sharedBudgetId", "adAccountId", "orgId":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeRequestIDFilters(request map[string]any, fields map[string]struct{}) error {
+	filters, ok := request["filters"].([]QueryFilterInput)
+	if !ok {
+		return nil
+	}
+	for index := range filters {
+		if _, ok := fields[filters[index].Field]; !ok {
+			continue
+		}
+		operator := strings.ToUpper(strings.TrimSpace(filters[index].Operator))
+		if operator == "IS_NULL" || operator == "IS_NOT_NULL" {
+			continue
+		}
+		value, err := numericAdamID(filters[index].Value)
+		if err != nil {
+			return fmt.Errorf("filters[%d].value: %w", index, err)
+		}
+		filters[index].Value = value
+	}
+	request["filters"] = filters
+	return nil
 }
 
 func numericAdamID(value any) (any, error) {

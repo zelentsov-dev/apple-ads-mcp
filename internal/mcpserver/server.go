@@ -12,7 +12,7 @@ import (
 	toolset "github.com/zelentsov-dev/apple-ads-mcp/internal/tools"
 )
 
-var Version = "0.1.0"
+var Version = "0.2.0"
 
 func New(manager *appleads.Manager, allowWrites bool, logWriter io.Writer) *mcp.Server {
 	if logWriter == nil {

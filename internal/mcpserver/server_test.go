@@ -46,6 +46,29 @@ func TestMCPHandshakeSchemasAndStructuredOutput(t *testing.T) {
 				t.Fatal("query tools must expose typed filters")
 			}
 		}
+		if tool.Name == "campaign_create_preview" || tool.Name == "creative_create_preview" {
+			schema := tool.InputSchema.(map[string]any)
+			if schema["additionalProperties"] != false {
+				t.Fatalf("%s input schema must reject unknown fields", tool.Name)
+			}
+			properties := schema["properties"].(map[string]any)
+			payload := properties["payload"].(map[string]any)
+			if payload["additionalProperties"] != false {
+				t.Fatalf("%s payload must be resource-specific", tool.Name)
+			}
+		}
+		if tool.Name == "ad_group_create_preview" {
+			schema := tool.InputSchema.(map[string]any)
+			payload := schema["properties"].(map[string]any)["payload"].(map[string]any)
+			required := payload["required"].([]any)
+			found := false
+			for _, field := range required {
+				found = found || field == "startTime"
+			}
+			if !found {
+				t.Fatal("ad-group create schema must require startTime")
+			}
+		}
 	}
 	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{Name: "server_info", Arguments: map[string]any{}})
 	if err != nil {

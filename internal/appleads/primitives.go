@@ -61,9 +61,18 @@ func (t *Timestamp) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &value); err != nil {
 		return errors.New("timestamp must be an ISO 8601 string")
 	}
-	if _, err := time.Parse(time.RFC3339, value); err != nil {
-		return errors.New("timestamp must use ISO 8601/RFC3339")
+	if !validTimestamp(value) {
+		return errors.New("timestamp must use ISO 8601 with optional timezone")
 	}
 	*t = Timestamp(value)
 	return nil
+}
+
+func validTimestamp(value string) bool {
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05.000", "2006-01-02T15:04:05"} {
+		if _, err := time.Parse(layout, value); err == nil {
+			return true
+		}
+	}
+	return false
 }

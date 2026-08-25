@@ -12,17 +12,6 @@ import (
 	"github.com/zelentsov-dev/apple-ads-mcp/internal/operations"
 )
 
-type CreatePreviewInput struct {
-	AccountInput
-	Payload map[string]any `json:"payload" jsonschema:"complete create payload for the named resource"`
-}
-
-type UpdatePreviewInput struct {
-	AccountInput
-	ID      string         `json:"id" jsonschema:"target resource ID as a string"`
-	Payload map[string]any `json:"payload" jsonschema:"fields to update"`
-}
-
 type CampaignStatePreviewInput struct {
 	AccountInput
 	CampaignID string `json:"campaignId" jsonschema:"campaign ID as a string"`
@@ -60,18 +49,39 @@ func MutationSpecs() []Spec {
 		{Name: "campaign_update_preview", Description: "Preview a campaign update after reading current state.", Class: "mutation_preview"},
 		{Name: "campaign_pause_preview", Description: "Preview pausing one campaign.", Class: "mutation_preview"},
 		{Name: "campaign_resume_preview", Description: "Preview resuming one campaign.", Class: "mutation_preview"},
+		{Name: "campaign_daily_budget_preview", Description: "Preview a campaign daily-budget update with typed money.", Class: "mutation_preview"},
+		{Name: "campaign_countries_preview", Description: "Preview replacing campaign country targeting.", Class: "mutation_preview"},
+		{Name: "campaign_schedule_preview", Description: "Preview a campaign start and end schedule update.", Class: "mutation_preview"},
 		{Name: "ad_group_create_preview", Description: "Preview creation of one ad group.", Class: "mutation_preview"},
 		{Name: "ad_group_update_preview", Description: "Preview an ad-group update.", Class: "mutation_preview"},
+		{Name: "ad_group_pause_preview", Description: "Preview pausing one ad group.", Class: "mutation_preview"},
+		{Name: "ad_group_resume_preview", Description: "Preview resuming one ad group.", Class: "mutation_preview"},
+		{Name: "ad_group_schedule_preview", Description: "Preview an ad-group start and end schedule update.", Class: "mutation_preview"},
+		{Name: "ad_group_search_match_preview", Description: "Preview enabling or disabling Apple Search Match for a Search Results ad group.", Class: "mutation_preview"},
+		{Name: "ad_group_targeting_preview", Description: "Preview App Store-only ad-group targeting.", Class: "mutation_preview"},
 		{Name: "ad_group_bid_preview", Description: "Preview an ad-group default bid update with decimal amount and currency.", Class: "mutation_preview"},
 		{Name: "ad_group_cpa_cap_preview", Description: "Preview an ad-group CPA cap update with decimal amount and currency.", Class: "mutation_preview"},
 		{Name: "keyword_create_preview", Description: "Preview creation of one targeting keyword.", Class: "mutation_preview"},
 		{Name: "keyword_update_preview", Description: "Preview a targeting keyword update.", Class: "mutation_preview"},
+		{Name: "keyword_bid_preview", Description: "Preview a targeting keyword bid update.", Class: "mutation_preview"},
+		{Name: "keyword_pause_preview", Description: "Preview pausing one targeting keyword.", Class: "mutation_preview"},
+		{Name: "keyword_resume_preview", Description: "Preview resuming one targeting keyword.", Class: "mutation_preview"},
 		{Name: "negative_keyword_create_preview", Description: "Preview creation of one negative keyword.", Class: "mutation_preview"},
 		{Name: "negative_keyword_update_preview", Description: "Preview a negative keyword update.", Class: "mutation_preview"},
 		{Name: "ad_create_preview", Description: "Preview creation of one ad.", Class: "mutation_preview"},
 		{Name: "ad_update_preview", Description: "Preview an ad update.", Class: "mutation_preview"},
+		{Name: "ad_pause_preview", Description: "Preview pausing one ad.", Class: "mutation_preview"},
+		{Name: "ad_resume_preview", Description: "Preview resuming one ad.", Class: "mutation_preview"},
 		{Name: "creative_create_preview", Description: "Preview creation of one creative.", Class: "mutation_preview"},
 		{Name: "creative_update_preview", Description: "Preview a creative update.", Class: "mutation_preview"},
+		{Name: "keywords_bulk_create_preview", Description: "Preview up to 100 targeting keyword creates as one drift-bound operation.", Class: "mutation_preview"},
+		{Name: "keywords_bulk_update_preview", Description: "Preview up to 100 targeting keyword updates as one drift-bound operation.", Class: "mutation_preview"},
+		{Name: "negative_keywords_bulk_create_preview", Description: "Preview up to 100 negative keyword creates in one scope.", Class: "mutation_preview"},
+		{Name: "negative_keywords_bulk_update_preview", Description: "Preview up to 100 negative keyword updates in one scope.", Class: "mutation_preview"},
+		{Name: "daily_budget_recommendation_apply_preview", Description: "Preview applying one daily-budget recommendation under an explicit maximum.", Class: "mutation_preview"},
+		{Name: "daily_budget_recommendation_dismiss_preview", Description: "Preview dismissing one daily-budget recommendation.", Class: "mutation_preview"},
+		{Name: "target_cpa_recommendation_apply_preview", Description: "Preview applying one target-CPA recommendation under an explicit maximum.", Class: "mutation_preview"},
+		{Name: "target_cpa_recommendation_dismiss_preview", Description: "Preview dismissing one target-CPA recommendation.", Class: "mutation_preview"},
 		{Name: "operations_apply", Description: "Apply exactly one non-expired, drift-free preview receipt.", Class: "mutation"},
 		{Name: "operations_inspect", Description: "Inspect receipt binding, expiry, and use state without applying it.", Class: "read"},
 		{Name: "operations_verify", Description: "Re-read a receipt target after an ambiguous write and return current state.", Class: "read"},
@@ -79,20 +89,17 @@ func MutationSpecs() []Spec {
 }
 
 func (s *Service) RegisterMutationTools(server *mcp.Server, store *operations.Store) {
-	for _, item := range []struct{ create, update, resource string }{
-		{"campaign_create_preview", "campaign_update_preview", "campaigns"},
-		{"ad_group_create_preview", "ad_group_update_preview", "adgroups"},
-		{"keyword_create_preview", "keyword_update_preview", "keywords"},
-		{"negative_keyword_create_preview", "negative_keyword_update_preview", "negative-keywords"},
-		{"ad_create_preview", "ad_update_preview", "ads"},
-		{"creative_create_preview", "creative_update_preview", "creatives"},
-	} {
-		resource := item.resource
-		addPreviewTool(server, mutationSpec(item.create), s.createPreview(store, resource, item.create))
-		addPreviewTool(server, mutationSpec(item.update), s.updatePreview(store, resource, item.update))
-	}
+	registerTypedResource[CampaignCreatePayload, CampaignUpdatePayload](server, s, store, "campaign_create_preview", "campaign_update_preview", "campaigns")
+	registerTypedResource[AdGroupCreatePayload, AdGroupUpdatePayload](server, s, store, "ad_group_create_preview", "ad_group_update_preview", "adgroups")
+	registerTypedResource[KeywordCreatePayload, KeywordUpdatePayload](server, s, store, "keyword_create_preview", "keyword_update_preview", "keywords")
+	registerTypedResource[NegativeKeywordCreatePayload, NegativeKeywordUpdatePayload](server, s, store, "negative_keyword_create_preview", "negative_keyword_update_preview", "negative-keywords")
+	registerTypedResource[AdCreatePayload, AdUpdatePayload](server, s, store, "ad_create_preview", "ad_update_preview", "ads")
+	registerTypedResource[CreativeCreatePayload, CreativeUpdatePayload](server, s, store, "creative_create_preview", "creative_update_preview", "creatives")
 	addPreviewTool(server, mutationSpec("campaign_pause_preview"), s.campaignStatePreview(store, "PAUSED", "campaign_pause"))
 	addPreviewTool(server, mutationSpec("campaign_resume_preview"), s.campaignStatePreview(store, "ENABLED", "campaign_resume"))
+	s.registerSpecializedMutationTools(server, store)
+	s.registerBulkMutationTools(server, store)
+	s.registerRecommendationMutationTools(server, store)
 	addPreviewTool(server, mutationSpec("ad_group_bid_preview"), s.adGroupBidPreview(store))
 	addPreviewTool(server, mutationSpec("ad_group_cpa_cap_preview"), s.adGroupCPACapPreview(store))
 
@@ -116,6 +123,10 @@ func (s *Service) RegisterMutationTools(server *mcp.Server, store *operations.St
 		summary := "Operation applied and Apple returned a response"
 		if receipt.Status == "unknown" {
 			summary = "Write outcome is unknown; verify current Apple state before another change"
+		} else if receipt.Status == "partial" {
+			summary = "Apple partially applied the operation; inspect item results and verify current state"
+		} else if receipt.Status == "failed" {
+			summary = "Apple returned item-level failures; no automatic retry was attempted"
 		}
 		output := ApplyOutput{Summary: summary, Receipt: &receipt}
 		return textResult(summary, receipt.Status == "unknown"), output, nil
@@ -146,35 +157,65 @@ func (s *Service) RegisterMutationTools(server *mcp.Server, store *operations.St
 	})
 }
 
-func (s *Service) createPreview(store *operations.Store, resource, name string) func(context.Context, *mcp.CallToolRequest, CreatePreviewInput) (*mcp.CallToolResult, PreviewOutput, error) {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, input CreatePreviewInput) (*mcp.CallToolResult, PreviewOutput, error) {
-		input.Payload = queryRequest(input.Payload)
-		if resource == "campaigns" {
-			if value := stringField(input.Payload, "adAccountId"); value != "" && value != input.AdAccountID {
-				return failedPreview(errors.New("campaign payload adAccountId does not match the explicit ad account"))
-			}
-			input.Payload["adAccountId"] = input.AdAccountID
-		}
-		if err := s.validateWrite(ctx, input.AccountInput, input.Payload); err != nil {
-			return failedPreview(err)
-		}
-		if err := s.ensureAppStoreMutation(ctx, input.AccountInput, resource, "", input.Payload, true); err != nil {
-			return failedPreview(err)
-		}
-		verify, err := appleads.ResourceQuery(resource, createVerificationQuery(resource, input.Payload))
+func registerTypedResource[CreatePayload, UpdatePayload any](server *mcp.Server, service *Service, store *operations.Store, createName, updateName, resource string) {
+	addPreviewTool(server, mutationSpec(createName), typedCreatePreview[CreatePayload](service, store, resource, createName))
+	addPreviewTool(server, mutationSpec(updateName), typedUpdatePreview[UpdatePayload](service, store, resource, updateName))
+}
+
+func typedCreatePreview[Payload any](service *Service, store *operations.Store, resource, name string) func(context.Context, *mcp.CallToolRequest, TypedCreatePreviewInput[Payload]) (*mcp.CallToolResult, PreviewOutput, error) {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input TypedCreatePreviewInput[Payload]) (*mcp.CallToolResult, PreviewOutput, error) {
+		payload, err := typedPayloadMap(input.Payload)
 		if err != nil {
 			return failedPreview(err)
 		}
-		mutation, err := appleads.ResourceCreate(resource, input.Payload)
-		if err != nil {
-			return failedPreview(err)
-		}
-		preview, err := store.Preview(ctx, s.manager, input.Profile, input.AdAccountID, name, nil, input.Payload, verify, mutation)
-		if err != nil {
-			return failedPreview(err)
-		}
-		return previewSuccess(preview)
+		return service.createPreviewPayload(ctx, store, resource, name, input.AccountInput, payload)
 	}
+}
+
+func typedUpdatePreview[Payload any](service *Service, store *operations.Store, resource, name string) func(context.Context, *mcp.CallToolRequest, TypedUpdatePreviewInput[Payload]) (*mcp.CallToolResult, PreviewOutput, error) {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input TypedUpdatePreviewInput[Payload]) (*mcp.CallToolResult, PreviewOutput, error) {
+		payload, err := typedPayloadMap(input.Payload)
+		if err != nil {
+			return failedPreview(err)
+		}
+		return service.updatePreviewPayload(ctx, store, resource, name, input.AccountInput, input.ID, payload)
+	}
+}
+
+func (s *Service) createPreviewPayload(ctx context.Context, store *operations.Store, resource, name string, account AccountInput, payload map[string]any) (*mcp.CallToolResult, PreviewOutput, error) {
+	payload = queryRequest(payload)
+	if resource == "campaigns" {
+		if value := stringField(payload, "adAccountId"); value != "" && value != account.AdAccountID {
+			return failedPreview(errors.New("campaign payload adAccountId does not match the explicit ad account"))
+		}
+		payload["adAccountId"] = account.AdAccountID
+	}
+	if err := validateTypedResourcePayload(resource, true, payload); err != nil {
+		return failedPreview(err)
+	}
+	if err := s.validateWrite(ctx, account, payload); err != nil {
+		return failedPreview(err)
+	}
+	if err := s.ensureAppStoreMutation(ctx, account, resource, "", payload, true); err != nil {
+		return failedPreview(err)
+	}
+	verify, err := appleads.ResourceQuery(resource, createVerificationQuery(resource, payload))
+	if err != nil {
+		return failedPreview(err)
+	}
+	mutation, err := appleads.ResourceCreate(resource, payload)
+	if err != nil {
+		return failedPreview(err)
+	}
+	impact, err := s.resourceImpact(ctx, account, resource, "", payload, true)
+	if err != nil {
+		return failedPreview(err)
+	}
+	preview, err := store.PreviewComposite(ctx, s.manager, account.Profile, account.AdAccountID, name, nil, payload, []operations.VerificationRead{{Name: "affected_inventory", Operation: verify}}, mutation, operations.PreviewOptions{Impact: impact})
+	if err != nil {
+		return failedPreview(err)
+	}
+	return previewSuccess(preview)
 }
 
 func createVerificationQuery(resource string, payload map[string]any) map[string]any {
@@ -183,45 +224,67 @@ func createVerificationQuery(resource string, payload map[string]any) map[string
 	switch resource {
 	case "adgroups":
 		parentField = "campaignId"
-	case "keywords", "negative-keywords", "ads":
+	case "keywords", "ads":
 		parentField = "adGroupId"
+	case "negative-keywords":
+		if adGroupID := stringField(payload, "adGroupId"); adGroupID != "" {
+			request["filters"] = []any{map[string]any{"field": "adGroupId", "operator": "EQUALS", "value": wireID(adGroupID)}}
+		} else if campaignID := stringField(payload, "campaignId"); campaignID != "" {
+			request["filters"] = []any{
+				map[string]any{"field": "campaignId", "operator": "EQUALS", "value": wireID(campaignID)},
+				map[string]any{"field": "adGroupId", "operator": "IS_NULL"},
+			}
+		}
 	}
 	if parentField != "" {
 		if parentID := stringField(payload, parentField); parentID != "" {
-			request["filters"] = []any{map[string]any{"field": parentField, "operator": "EQUALS", "value": parentID}}
+			request["filters"] = []any{map[string]any{"field": parentField, "operator": "EQUALS", "value": wireID(parentID)}}
 		}
 	}
 	return request
 }
 
-func (s *Service) updatePreview(store *operations.Store, resource, name string) func(context.Context, *mcp.CallToolRequest, UpdatePreviewInput) (*mcp.CallToolResult, PreviewOutput, error) {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, input UpdatePreviewInput) (*mcp.CallToolResult, PreviewOutput, error) {
-		if err := s.validateWrite(ctx, input.AccountInput, input.Payload); err != nil {
-			return failedPreview(err)
-		}
-		if err := s.ensureAppStoreMutation(ctx, input.AccountInput, resource, input.ID, input.Payload, false); err != nil {
-			return failedPreview(err)
-		}
-		verify, err := appleads.ResourceGet(resource, input.ID)
-		if err != nil {
-			return failedPreview(err)
-		}
-		mutation, err := appleads.ResourceUpdate(resource, input.ID, input.Payload)
-		if err != nil {
-			return failedPreview(err)
-		}
-		preview, err := store.Preview(ctx, s.manager, input.Profile, input.AdAccountID, name, []string{input.ID}, input.Payload, verify, mutation)
-		if err != nil {
-			return failedPreview(err)
-		}
-		return previewSuccess(preview)
+func wireID(value string) any {
+	converted, err := numericAdamID(value)
+	if err != nil {
+		return value
 	}
+	return converted
+}
+
+func (s *Service) updatePreviewPayload(ctx context.Context, store *operations.Store, resource, name string, account AccountInput, id string, payload map[string]any) (*mcp.CallToolResult, PreviewOutput, error) {
+	if err := validateTypedResourcePayload(resource, false, payload); err != nil {
+		return failedPreview(err)
+	}
+	if err := s.validateWrite(ctx, account, payload); err != nil {
+		return failedPreview(err)
+	}
+	if err := s.ensureAppStoreMutation(ctx, account, resource, id, payload, false); err != nil {
+		return failedPreview(err)
+	}
+	verify, err := appleads.ResourceGet(resource, id)
+	if err != nil {
+		return failedPreview(err)
+	}
+	mutation, err := appleads.ResourceUpdate(resource, id, payload)
+	if err != nil {
+		return failedPreview(err)
+	}
+	impact, err := s.resourceImpact(ctx, account, resource, id, payload, false)
+	if err != nil {
+		return failedPreview(err)
+	}
+	preview, err := store.PreviewComposite(ctx, s.manager, account.Profile, account.AdAccountID, name, []string{id}, payload, []operations.VerificationRead{{Name: "current", Operation: verify}}, mutation, operations.PreviewOptions{Impact: impact})
+	if err != nil {
+		return failedPreview(err)
+	}
+	return previewSuccess(preview)
 }
 
 func (s *Service) campaignStatePreview(store *operations.Store, status, name string) func(context.Context, *mcp.CallToolRequest, CampaignStatePreviewInput) (*mcp.CallToolResult, PreviewOutput, error) {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, input CampaignStatePreviewInput) (*mcp.CallToolResult, PreviewOutput, error) {
 		payload := map[string]any{"status": status}
-		return s.updatePreview(store, "campaigns", name)(ctx, nil, UpdatePreviewInput{AccountInput: input.AccountInput, ID: input.CampaignID, Payload: payload})
+		return s.updatePreviewPayload(ctx, store, "campaigns", name, input.AccountInput, input.CampaignID, payload)
 	}
 }
 
@@ -232,7 +295,7 @@ func (s *Service) adGroupBidPreview(store *operations.Store) func(context.Contex
 			return failedPreview(err)
 		}
 		payload := map[string]any{"bidStrategy": map[string]any{"bid": money}}
-		return s.updatePreview(store, "adgroups", "ad_group_bid")(ctx, nil, UpdatePreviewInput{AccountInput: input.AccountInput, ID: input.AdGroupID, Payload: payload})
+		return s.updatePreviewPayload(ctx, store, "adgroups", "ad_group_bid", input.AccountInput, input.AdGroupID, payload)
 	}
 }
 
@@ -243,7 +306,7 @@ func (s *Service) adGroupCPACapPreview(store *operations.Store) func(context.Con
 			return failedPreview(err)
 		}
 		payload := map[string]any{"cpaCap": map[string]any{"value": money}}
-		return s.updatePreview(store, "adgroups", "ad_group_cpa_cap")(ctx, nil, UpdatePreviewInput{AccountInput: input.AccountInput, ID: input.AdGroupID, Payload: payload})
+		return s.updatePreviewPayload(ctx, store, "adgroups", "ad_group_cpa_cap", input.AccountInput, input.AdGroupID, payload)
 	}
 }
 
@@ -354,6 +417,9 @@ func (s *Service) ensureAppStoreMutation(ctx context.Context, account AccountInp
 	if containsMapsValue(payload) {
 		return errors.New("Apple Maps payloads are outside this server's scope")
 	}
+	if err := s.ensurePayloadCurrency(ctx, account, payload); err != nil {
+		return err
+	}
 	switch resource {
 	case "campaigns":
 		if create {
@@ -375,6 +441,20 @@ func (s *Service) ensureAppStoreMutation(ctx context.Context, account AccountInp
 			if !containsAdamID(owned.Data, adamID) {
 				return fmt.Errorf("Apple did not confirm promotedObjectId %s as an owned app", adamID)
 			}
+			appOperation, err := appleads.App(adamID)
+			if err != nil {
+				return err
+			}
+			appDetails, err := s.manager.Do(ctx, account.Profile, account.AdAccountID, appOperation)
+			if err != nil {
+				return fmt.Errorf("read promoted app storefronts: %w", err)
+			}
+			if err := ensureCampaignStorefronts(payload, appDetails.Data); err != nil {
+				return err
+			}
+			if err := s.ensureCampaignEligibility(ctx, account, adamID, payload); err != nil {
+				return err
+			}
 			return nil
 		}
 		current, err := s.readResource(ctx, account, resource, id)
@@ -390,13 +470,47 @@ func (s *Service) ensureAppStoreMutation(ctx context.Context, account AccountInp
 		if requested := stringField(payload, "promotedObjectId"); requested != "" && requested != findStringField(current, "promotedObjectId") {
 			return errors.New("campaign promotedObjectId cannot be changed")
 		}
+		currentPlacement := stringSlice(findMapField(findMapField(current, "targeting"), "supplyPlacement")["include"])
+		requestedPlacement := stringSlice(findMapField(findMapField(payload, "targeting"), "supplyPlacement")["include"])
+		if len(requestedPlacement) > 0 && (len(currentPlacement) != 1 || requestedPlacement[0] != currentPlacement[0]) {
+			return errors.New("campaign placement cannot be changed after creation")
+		}
+		if len(stringSlice(findMapField(findMapField(payload, "targeting"), "countryOrRegion")["include"])) > 0 {
+			adamID := findStringField(current, "promotedObjectId")
+			app, appErr := appleads.App(adamID)
+			if appErr != nil {
+				return appErr
+			}
+			appResult, appErr := s.manager.Do(ctx, account.Profile, account.AdAccountID, app)
+			if appErr != nil {
+				return fmt.Errorf("verify campaign storefronts: %w", appErr)
+			}
+			if appErr := ensureCampaignStorefronts(payload, appResult.Data); appErr != nil {
+				return appErr
+			}
+			eligibilityTargeting := cloneObject(findMapField(current, "targeting"))
+			if eligibilityTargeting == nil {
+				return errors.New("current campaign has no targeting for eligibility validation")
+			}
+			eligibilityPayload := map[string]any{"targeting": eligibilityTargeting}
+			eligibilityTargeting["countryOrRegion"] = cloneObject(findMapField(findMapField(payload, "targeting"), "countryOrRegion"))
+			if appErr := s.ensureCampaignEligibility(ctx, account, adamID, eligibilityPayload); appErr != nil {
+				return appErr
+			}
+		}
 		return nil
 	case "adgroups":
 		campaignID, err := s.parentID(ctx, account, resource, id, payload, "campaignId", create)
 		if err != nil {
 			return err
 		}
-		return s.ensureAppStoreCampaign(ctx, account, campaignID)
+		if err := s.ensureAppStoreCampaign(ctx, account, campaignID); err != nil {
+			return err
+		}
+		if enabled, ok := payload["automatedKeywordsOptIn"].(bool); ok && enabled {
+			return s.ensureCampaignPlacement(ctx, account, campaignID, "APPSTORE_SEARCH_RESULTS")
+		}
+		return nil
 	case "keywords", "ads":
 		adGroupID, err := s.parentID(ctx, account, resource, id, payload, "adGroupId", create)
 		if err != nil {
@@ -409,13 +523,23 @@ func (s *Service) ensureAppStoreMutation(ctx context.Context, account AccountInp
 		if err := s.ensureAppStoreCampaign(ctx, account, campaignID); err != nil {
 			return err
 		}
+		placement, err := s.campaignPlacement(ctx, account, campaignID)
+		if err != nil {
+			return err
+		}
+		if resource == "keywords" && placement != "APPSTORE_SEARCH_RESULTS" {
+			return fmt.Errorf("keywords require APPSTORE_SEARCH_RESULTS; campaign placement is %s", placement)
+		}
 		if resource == "ads" {
+			if !explicitAdsSupported(placement) {
+				return fmt.Errorf("explicit ads are not supported for campaign placement %s", placement)
+			}
 			creativeID := stringField(payload, "creativeId")
 			if create && creativeID == "" {
 				return errors.New("ad create requires creativeId")
 			}
 			if creativeID != "" {
-				if err := s.ensureAppStoreCreative(ctx, account, creativeID); err != nil {
+				if err := s.ensureAppStoreCreative(ctx, account, creativeID, placement); err != nil {
 					return err
 				}
 			}
@@ -448,7 +572,10 @@ func (s *Service) ensureAppStoreMutation(ctx context.Context, account AccountInp
 		if campaignID == "" {
 			return errors.New("negative keyword must resolve to a campaign or ad group")
 		}
-		return s.ensureAppStoreCampaign(ctx, account, campaignID)
+		if err := s.ensureAppStoreCampaign(ctx, account, campaignID); err != nil {
+			return err
+		}
+		return s.ensureCampaignPlacement(ctx, account, campaignID, "APPSTORE_SEARCH_RESULTS")
 	case "creatives":
 		creativeType := stringField(payload, "creativeType")
 		if !create && creativeType == "" {
@@ -461,10 +588,43 @@ func (s *Service) ensureAppStoreMutation(ctx context.Context, account AccountInp
 		if creativeType != "DEFAULT_PRODUCT_PAGE" && creativeType != "CUSTOM_PRODUCT_PAGE" {
 			return fmt.Errorf("creative type %q is outside App Store scope", creativeType)
 		}
+		if create {
+			destination := findMapField(payload, "destination")
+			parameters := findMapField(destination, "parameters")
+			adamID := stringField(parameters, "adamId")
+			search, err := appleads.SearchApps(appleads.SearchAppsParams{Query: adamID, ReturnOwnedApps: true, Limit: 20})
+			if err != nil {
+				return err
+			}
+			owned, err := s.manager.Do(ctx, account.Profile, account.AdAccountID, search)
+			if err != nil {
+				return fmt.Errorf("verify creative app ownership: %w", err)
+			}
+			if !containsAdamID(owned.Data, adamID) {
+				return fmt.Errorf("Apple did not confirm creative adamId %s as an owned app", adamID)
+			}
+			if productPageID := stringField(parameters, "productPageId"); productPageID != "" {
+				op, err := appleads.ProductPage(productPageID)
+				if err != nil {
+					return err
+				}
+				page, err := s.manager.Do(ctx, account.Profile, account.AdAccountID, op)
+				if err != nil {
+					return fmt.Errorf("verify Custom Product Page: %w", err)
+				}
+				if pageAdamID := findStringField(page.Data, "adamId"); pageAdamID != "" && pageAdamID != adamID {
+					return errors.New("Custom Product Page belongs to a different app")
+				}
+			}
+		}
 	case "shared-budgets":
 		return nil
 	}
 	return nil
+}
+
+func explicitAdsSupported(placement string) bool {
+	return placement != "APPSTORE_SEARCH_RESULTS"
 }
 
 func (s *Service) ensureAppStoreCampaign(ctx context.Context, account AccountInput, campaignID string) error {
@@ -479,7 +639,149 @@ func (s *Service) ensureAppStoreCampaign(ctx context.Context, account AccountInp
 	return nil
 }
 
-func (s *Service) ensureAppStoreCreative(ctx context.Context, account AccountInput, creativeID string) error {
+func (s *Service) campaignPlacement(ctx context.Context, account AccountInput, campaignID string) (string, error) {
+	current, err := s.readResource(ctx, account, "campaigns", campaignID)
+	if err != nil {
+		return "", err
+	}
+	targeting := findMapField(current, "targeting")
+	placement := findMapField(targeting, "supplyPlacement")
+	values := stringSlice(placement["include"])
+	if len(values) != 1 {
+		return "", fmt.Errorf("campaign %s does not have exactly one App Store placement", campaignID)
+	}
+	return values[0], nil
+}
+
+func (s *Service) ensureCampaignPlacement(ctx context.Context, account AccountInput, campaignID, expected string) error {
+	placement, err := s.campaignPlacement(ctx, account, campaignID)
+	if err != nil {
+		return err
+	}
+	if placement != expected {
+		return fmt.Errorf("campaign %s uses %s; this operation requires %s", campaignID, placement, expected)
+	}
+	return nil
+}
+
+func (s *Service) ensurePayloadCurrency(ctx context.Context, account AccountInput, payload map[string]any) error {
+	currencies := collectFieldValues(payload, "currency", MaxItems)
+	if len(currencies) == 0 {
+		return nil
+	}
+	op, err := appleads.AdAccount(account.AdAccountID)
+	if err != nil {
+		return err
+	}
+	result, err := s.manager.Do(ctx, account.Profile, account.AdAccountID, op)
+	if err != nil {
+		return fmt.Errorf("read account currency: %w", err)
+	}
+	accountCurrency := strings.ToUpper(findStringField(result.Data, "currency"))
+	if accountCurrency == "" {
+		return errors.New("Apple ad account response did not include currency")
+	}
+	for _, currency := range currencies {
+		if strings.ToUpper(currency) != accountCurrency {
+			return fmt.Errorf("money currency %s does not match ad account currency %s", currency, accountCurrency)
+		}
+	}
+	return nil
+}
+
+func ensureCampaignStorefronts(payload map[string]any, app any) error {
+	targeting := findMapField(payload, "targeting")
+	countries := stringSlice(findMapField(targeting, "countryOrRegion")["include"])
+	if len(countries) == 0 {
+		return nil
+	}
+	available := map[string]struct{}{}
+	for _, storefront := range findStringSliceField(app, "availableStorefronts") {
+		available[strings.ToUpper(storefront)] = struct{}{}
+	}
+	if len(available) == 0 {
+		return errors.New("Apple did not return availableStorefronts for the promoted app")
+	}
+	for _, country := range countries {
+		if _, ok := available[strings.ToUpper(country)]; !ok {
+			return fmt.Errorf("promoted app is not available in storefront %s", country)
+		}
+	}
+	return nil
+}
+
+func (s *Service) ensureCampaignEligibility(ctx context.Context, account AccountInput, adamID string, payload map[string]any) error {
+	targeting := findMapField(payload, "targeting")
+	countries := stringSlice(findMapField(targeting, "countryOrRegion")["include"])
+	placements := stringSlice(findMapField(targeting, "supplyPlacement")["include"])
+	if len(countries) == 0 || len(placements) != 1 {
+		return errors.New("campaign eligibility requires countries and exactly one placement")
+	}
+	body := map[string]any{
+		"filters": []any{
+			map[string]any{"field": "adamId", "operator": "EQUALS", "value": wireID(adamID)},
+			map[string]any{"field": "supplyPlacement", "operator": "EQUALS", "value": placements[0]},
+			map[string]any{"field": "countryOrRegion", "operator": "IN", "value": countries},
+		},
+		"pagination": map[string]any{"offset": 0, "pageSize": 200},
+	}
+	result, err := s.manager.Do(ctx, account.Profile, account.AdAccountID, appleads.AppsEligibility(body))
+	if err != nil {
+		return fmt.Errorf("verify app placement eligibility: %w", err)
+	}
+	for _, country := range countries {
+		if !hasEligiblePlacement(result.Data, adamID, placements[0], country) {
+			return fmt.Errorf("Apple did not confirm app %s as eligible for %s in %s", adamID, placements[0], country)
+		}
+	}
+	return nil
+}
+
+func hasEligiblePlacement(value any, adamID, placement, country string) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		if fmt.Sprint(typed["adamId"]) == adamID && fmt.Sprint(typed["supplyPlacement"]) == placement && strings.EqualFold(fmt.Sprint(typed["countryOrRegion"]), country) && fmt.Sprint(typed["state"]) == "ELIGIBLE" {
+			return true
+		}
+		for _, item := range typed {
+			if hasEligiblePlacement(item, adamID, placement, country) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if hasEligiblePlacement(item, adamID, placement, country) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func findStringSliceField(value any, field string) []string {
+	switch typed := value.(type) {
+	case map[string]any:
+		if item, ok := typed[field]; ok {
+			if values := stringSlice(item); len(values) > 0 {
+				return values
+			}
+		}
+		for _, item := range typed {
+			if values := findStringSliceField(item, field); len(values) > 0 {
+				return values
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if values := findStringSliceField(item, field); len(values) > 0 {
+				return values
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Service) ensureAppStoreCreative(ctx context.Context, account AccountInput, creativeID, placement string) error {
 	current, err := s.readResource(ctx, account, "creatives", creativeID)
 	if err != nil {
 		return err
@@ -488,7 +790,106 @@ func (s *Service) ensureAppStoreCreative(ctx context.Context, account AccountInp
 	if creativeType != "DEFAULT_PRODUCT_PAGE" && creativeType != "CUSTOM_PRODUCT_PAGE" {
 		return fmt.Errorf("creative %s has type %q; only App Store creatives are supported", creativeID, creativeType)
 	}
+	if status := findStringField(current, "systemStatus"); status != "VALID" {
+		return fmt.Errorf("creative %s has systemStatus %q; ads require a VALID creative", creativeID, status)
+	}
+	eligibility := findMapField(current, "eligibility")
+	if blocked := eligibility["blockedGroups"]; blocked != nil && containsStringValue(blocked, placement) {
+		return fmt.Errorf("creative %s is blocked for placement %s", creativeID, placement)
+	}
+	if allowed := eligibility["allowedGroups"]; hasPlacementValue(allowed) && !containsStringValue(allowed, placement) {
+		return fmt.Errorf("creative %s is not eligible for placement %s", creativeID, placement)
+	}
 	return nil
+}
+
+func hasPlacementValue(value any) bool {
+	for _, placement := range []string{"APPSTORE_SEARCH_RESULTS", "APPSTORE_SEARCH_TAB", "APPSTORE_TODAY_TAB", "APPSTORE_PRODUCT_PAGES"} {
+		if containsStringValue(value, placement) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) resourceImpact(ctx context.Context, account AccountInput, resource, id string, payload map[string]any, create bool) (*operations.OperationImpact, error) {
+	impact := &operations.OperationImpact{SpendAffecting: resource != "creatives", ObjectCount: 1}
+	if currencies := collectFieldValues(payload, "currency", MaxItems); len(currencies) > 0 {
+		impact.Currency = strings.ToUpper(currencies[0])
+	}
+	switch resource {
+	case "campaigns":
+		if create {
+			impact.ParentIDs = []string{stringField(payload, "promotedObjectId")}
+			placements := stringSlice(findMapField(findMapField(payload, "targeting"), "supplyPlacement")["include"])
+			if len(placements) == 1 {
+				impact.Placement = placements[0]
+			}
+			return impact, nil
+		}
+		placement, err := s.campaignPlacement(ctx, account, id)
+		if err != nil {
+			return nil, err
+		}
+		impact.Placement = placement
+		impact.ParentIDs = []string{id}
+	case "adgroups":
+		campaignID, err := s.parentID(ctx, account, resource, id, payload, "campaignId", create)
+		if err != nil {
+			return nil, err
+		}
+		placement, err := s.campaignPlacement(ctx, account, campaignID)
+		if err != nil {
+			return nil, err
+		}
+		impact.Placement = placement
+		impact.ParentIDs = []string{campaignID}
+	case "keywords", "ads":
+		adGroupID, err := s.parentID(ctx, account, resource, id, payload, "adGroupId", create)
+		if err != nil {
+			return nil, err
+		}
+		campaignID, err := s.parentID(ctx, account, "adgroups", adGroupID, nil, "campaignId", false)
+		if err != nil {
+			return nil, err
+		}
+		placement, err := s.campaignPlacement(ctx, account, campaignID)
+		if err != nil {
+			return nil, err
+		}
+		impact.Placement = placement
+		impact.ParentIDs = []string{campaignID, adGroupID}
+	case "negative-keywords":
+		campaignID := stringField(payload, "campaignId")
+		adGroupID := stringField(payload, "adGroupId")
+		if !create {
+			current, err := s.readResource(ctx, account, resource, id)
+			if err != nil {
+				return nil, err
+			}
+			campaignID = findStringField(current, "campaignId")
+			adGroupID = findStringField(current, "adGroupId")
+		}
+		if campaignID == "" && adGroupID != "" {
+			var err error
+			campaignID, err = s.parentID(ctx, account, "adgroups", adGroupID, nil, "campaignId", false)
+			if err != nil {
+				return nil, err
+			}
+		}
+		placement, err := s.campaignPlacement(ctx, account, campaignID)
+		if err != nil {
+			return nil, err
+		}
+		impact.Placement = placement
+		impact.ParentIDs = []string{campaignID}
+		if adGroupID != "" {
+			impact.ParentIDs = append(impact.ParentIDs, adGroupID)
+		}
+	case "creatives":
+		impact.SpendAffecting = false
+	}
+	return impact, nil
 }
 
 func (s *Service) parentID(ctx context.Context, account AccountInput, resource, id string, payload map[string]any, field string, create bool) (string, error) {

@@ -1,25 +1,29 @@
 # Roadmap
 
-## v0.1 — public foundation
+## v0.2 — safe App Store campaign operator
 
-Profiles, ES256 OAuth, account discovery, owned-app search, eligibility, suggestions, insights, reports, recommendations, change history, account health, app opportunities, and campaign audits are implemented.
+v0.2 delivers bounded account inventory, typed App Store schemas, centralized placement and targeting validation, specialized campaign-management previews, bulk targeting and negative keyword operations, capped recommendation actions, composite drift protection, and item-level verification.
 
-Receipt-gated create/update flows for campaigns, ad groups, targeting keywords, negative keywords, ads, and App Store creatives are also present. Pause, resume, ad-group bid, and CPA-cap previews are included. Deletion and automatic budget increases stay unavailable.
+The release covers all four App Store placements. Live availability remains an Apple account/app/storefront decision. Manual acceptance uses separate clearly named `PAUSED` campaigns and never enables delivery.
 
-Private live acceptance verified read-only intelligence and paused campaign creation through direct API readback without placing account-specific evidence in the public repository.
+Deletion, account mutation, shared-budget mutation, budget orders, Apple Maps, and legacy v5 remain intentionally unavailable.
 
-## v0.2 — broader campaign management
+## v0.3 — lifecycle and budget foundations
 
-Expand typed mutation payloads, improve report selectors, add recommendation preview/apply flows, and verify every supported supply source. Add deletion only after inventory-level revalidation tests cover the complete parent-child resource graph.
+- Design soft-delete previews with full parent/child inventory revalidation and explicit cascade impact.
+- Add typed shared-budget and budget-order operations only when the current Platform API exposes a complete App Store contract.
+- Expand DPP/CPP creative diagnostics and placement-specific rejection guidance.
+- Add exportable, redacted local acceptance summaries without account data.
+- Track new App Store resources and enums discovered by the weekly upstream audit.
 
-## v0.3 — full App Store Ads coverage
+No automatic budget optimization or mass recommendation apply is planned for v0.3.
 
-Complete and verify typed models for ads, creatives, read-only Custom Product Pages, shared budgets, and recommendation actions. Shared budgets remain read-only until App Store-only impact can be proven. Apple Ads Platform API v1 does not currently document budget-order endpoints, so the MCP does not invent them. Add deletion only after inventory-level revalidation tests cover every supported resource.
+## v1.0 — stable production contract
 
-## v1.0 — production hardening
+- Freeze stable MCP tool names and schemas under a compatibility policy.
+- Complete upstream MCP conformance coverage as stdio runner support becomes available.
+- Publish provenance and signing policy for binaries and containers.
+- Define long-term deprecation windows and machine-readable schema diffs.
+- Require repeatable PAUSED acceptance evidence for every supported placement.
 
-Freeze stable tool schemas, publish compatibility policy, complete official MCP conformance coverage, generate signed release artifacts, update the Homebrew formula with release checksums, and publish the OCI package metadata to the MCP Registry.
-
-Current transport coverage uses a real child-process stdio session through the official Go SDK. The official conformance runner requires a URL for server tests and does not yet support launching stdio servers, so full runner coverage is intentionally not claimed.
-
-The machine-readable status is in `api-contract/operations.json`. A scheduled workflow audits Apple documentation, the official Java client, the MCP SDK, and authentication dependencies.
+The machine-readable status is in [operations.json](../api-contract/operations.json). The scheduled audit compares the official Apple Java client release and App Store endpoint inventory with the pinned [upstream baseline](../api-contract/upstream-baseline.json).

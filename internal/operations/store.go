@@ -22,44 +22,87 @@ type Executor interface {
 }
 
 type OperationPreview struct {
-	Receipt       string         `json:"receipt"`
-	ExpiresAt     string         `json:"expiresAt"`
-	Profile       string         `json:"profile"`
-	AdAccountID   string         `json:"adAccountId"`
-	Operation     string         `json:"operation"`
-	TargetIDs     []string       `json:"targetIds,omitempty"`
+	Receipt       string                 `json:"receipt"`
+	ExpiresAt     string                 `json:"expiresAt"`
+	Profile       string                 `json:"profile"`
+	AdAccountID   string                 `json:"adAccountId"`
+	Operation     string                 `json:"operation"`
+	TargetIDs     []string               `json:"targetIds,omitempty"`
+	Before        any                    `json:"before,omitempty"`
+	After         map[string]any         `json:"after"`
+	Diff          map[string]any         `json:"diff"`
+	CurrentHash   string                 `json:"currentStateHash"`
+	PayloadHash   string                 `json:"payloadHash"`
+	RequiresApply bool                   `json:"requiresApply"`
+	Impact        *OperationImpact       `json:"impact,omitempty"`
+	Items         []OperationItemPreview `json:"items,omitempty"`
+}
+
+type OperationImpact struct {
+	SpendAffecting bool            `json:"spendAffecting"`
+	Placement      string          `json:"placement,omitempty"`
+	ParentIDs      []string        `json:"parentIds,omitempty"`
+	ObjectCount    int             `json:"objectCount"`
+	Currency       string          `json:"currency,omitempty"`
+	MaximumAmount  *appleads.Money `json:"maximumAmount,omitempty"`
+}
+
+type OperationItemPreview struct {
+	CorrelationID string         `json:"correlationId"`
+	TargetID      string         `json:"targetId,omitempty"`
 	Before        any            `json:"before,omitempty"`
 	After         map[string]any `json:"after"`
-	Diff          map[string]any `json:"diff"`
-	CurrentHash   string         `json:"currentStateHash"`
-	PayloadHash   string         `json:"payloadHash"`
-	RequiresApply bool           `json:"requiresApply"`
+}
+
+type OperationItemStatus struct {
+	CorrelationID string `json:"correlationId"`
+	TargetID      string `json:"targetId,omitempty"`
+	Status        string `json:"status"`
+	Error         any    `json:"error,omitempty"`
 }
 
 type OperationReceipt struct {
-	Receipt      string           `json:"receipt"`
-	Status       string           `json:"status"`
-	Operation    string           `json:"operation"`
-	Profile      string           `json:"profile"`
-	AdAccountID  string           `json:"adAccountId"`
-	AppliedAt    string           `json:"appliedAt,omitempty"`
-	Result       *appleads.Result `json:"result,omitempty"`
-	Verification string           `json:"verification,omitempty"`
+	Receipt      string                `json:"receipt"`
+	Status       string                `json:"status"`
+	Operation    string                `json:"operation"`
+	Profile      string                `json:"profile"`
+	AdAccountID  string                `json:"adAccountId"`
+	AppliedAt    string                `json:"appliedAt,omitempty"`
+	Result       *appleads.Result      `json:"result,omitempty"`
+	Verification string                `json:"verification,omitempty"`
+	Items        []OperationItemStatus `json:"items,omitempty"`
 }
 
 type OperationVerification struct {
-	Receipt      string `json:"receipt"`
-	Status       string `json:"status"`
-	Used         bool   `json:"used"`
-	Current      any    `json:"current,omitempty"`
-	CurrentHash  string `json:"currentStateHash"`
-	PreviewHash  string `json:"previewStateHash"`
-	ExpectedDiff any    `json:"expectedDiff"`
+	Receipt      string               `json:"receipt"`
+	Status       string               `json:"status"`
+	Used         bool                 `json:"used"`
+	Current      any                  `json:"current,omitempty"`
+	CurrentHash  string               `json:"currentStateHash"`
+	PreviewHash  string               `json:"previewStateHash"`
+	ExpectedDiff any                  `json:"expectedDiff"`
+	Objects      []ObjectVerification `json:"objects,omitempty"`
+}
+
+type ObjectVerification struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Current any    `json:"current,omitempty"`
+}
+
+type VerificationRead struct {
+	Name      string
+	Operation appleads.Operation
+}
+
+type PreviewOptions struct {
+	Impact *OperationImpact
+	Items  []OperationItemPreview
 }
 
 type record struct {
 	preview  OperationPreview
-	verify   appleads.Operation
+	verify   []VerificationRead
 	mutation appleads.Operation
 	used     bool
 	size     int
@@ -87,14 +130,21 @@ func NewStoreForTest(now func() time.Time, ttl time.Duration) *Store {
 }
 
 func (s *Store) Preview(ctx context.Context, executor Executor, profile, adAccountID, name string, targetIDs []string, payload map[string]any, verify, mutation appleads.Operation) (OperationPreview, error) {
+	return s.PreviewComposite(ctx, executor, profile, adAccountID, name, targetIDs, payload, []VerificationRead{{Name: "current", Operation: verify}}, mutation, PreviewOptions{})
+}
+
+func (s *Store) PreviewComposite(ctx context.Context, executor Executor, profile, adAccountID, name string, targetIDs []string, payload map[string]any, verify []VerificationRead, mutation appleads.Operation, options PreviewOptions) (OperationPreview, error) {
 	if !mutation.IsMutation() {
 		return OperationPreview{}, errors.New("preview requires a mutation operation")
 	}
-	current, err := executor.Do(ctx, profile, adAccountID, verify)
+	if len(verify) == 0 {
+		return OperationPreview{}, errors.New("preview requires at least one verification read")
+	}
+	current, _, err := readVerificationState(ctx, executor, profile, adAccountID, verify)
 	if err != nil {
 		return OperationPreview{}, fmt.Errorf("read current state: %w", err)
 	}
-	currentHash, err := valueHash(current.Data)
+	currentHash, err := valueHash(current)
 	if err != nil {
 		return OperationPreview{}, err
 	}
@@ -102,7 +152,7 @@ func (s *Store) Preview(ctx context.Context, executor Executor, profile, adAccou
 	if err != nil {
 		return OperationPreview{}, err
 	}
-	currentData, err := json.Marshal(current.Data)
+	currentData, err := json.Marshal(current)
 	if err != nil {
 		return OperationPreview{}, fmt.Errorf("size operation state: %w", err)
 	}
@@ -122,12 +172,14 @@ func (s *Store) Preview(ctx context.Context, executor Executor, profile, adAccou
 		AdAccountID:   adAccountID,
 		Operation:     name,
 		TargetIDs:     append([]string(nil), targetIDs...),
-		Before:        current.Data,
+		Before:        current,
 		After:         cloneMap(payload),
 		Diff:          map[string]any{"set": cloneMap(payload)},
 		CurrentHash:   currentHash,
 		PayloadHash:   payloadHash,
 		RequiresApply: true,
+		Impact:        options.Impact,
+		Items:         append([]OperationItemPreview(nil), options.Items...),
 	}
 	s.mu.Lock()
 	s.pruneExpiredLocked()
@@ -135,7 +187,7 @@ func (s *Store) Preview(ctx context.Context, executor Executor, profile, adAccou
 		s.mu.Unlock()
 		return OperationPreview{}, errors.New("receipt capacity reached; wait for existing previews to expire")
 	}
-	s.records[receipt] = &record{preview: preview, verify: verify, mutation: mutation, size: recordSize}
+	s.records[receipt] = &record{preview: preview, verify: append([]VerificationRead(nil), verify...), mutation: mutation, size: recordSize}
 	s.total += recordSize
 	s.mu.Unlock()
 	return preview, nil
@@ -178,11 +230,11 @@ func (s *Store) Apply(ctx context.Context, executor Executor, receipt string) (O
 	mutation := record.mutation
 	s.mu.Unlock()
 
-	current, err := executor.Do(ctx, preview.Profile, preview.AdAccountID, verify)
+	current, _, err := readVerificationState(ctx, executor, preview.Profile, preview.AdAccountID, verify)
 	if err != nil {
 		return OperationReceipt{}, fmt.Errorf("re-read current state: %w", err)
 	}
-	currentHash, err := valueHash(current.Data)
+	currentHash, err := valueHash(current)
 	if err != nil {
 		return OperationReceipt{}, err
 	}
@@ -215,11 +267,37 @@ func (s *Store) Apply(ctx context.Context, executor Executor, receipt string) (O
 		if errors.As(err, &ambiguous) {
 			receiptResult.Status = "unknown"
 			receiptResult.Verification = "committed_unverified"
+			receiptResult.Items = unknownItemStatuses(preview.Items)
 			return receiptResult, nil
 		}
 		return OperationReceipt{}, err
 	}
-	receiptResult.Status = "applied"
+	receiptResult.Items = resultItemStatuses(result.Data, preview.Items)
+	if len(receiptResult.Items) > 0 {
+		s.mu.Lock()
+		targetIDs := make([]string, 0, len(receiptResult.Items))
+		for index := range record.preview.Items {
+			if index < len(receiptResult.Items) && receiptResult.Items[index].TargetID != "" {
+				record.preview.Items[index].TargetID = receiptResult.Items[index].TargetID
+				targetIDs = append(targetIDs, receiptResult.Items[index].TargetID)
+			}
+		}
+		if len(targetIDs) > 0 {
+			record.preview.TargetIDs = targetIDs
+		}
+		s.mu.Unlock()
+	}
+	if len(preview.TargetIDs) == 0 && len(preview.Items) == 0 {
+		if createdID := findFirstResultID(result.Data); createdID != "" {
+			s.mu.Lock()
+			record.preview.TargetIDs = []string{createdID}
+			s.mu.Unlock()
+		}
+	}
+	receiptResult.Status = aggregateItemStatus(receiptResult.Items)
+	if receiptResult.Status == "" {
+		receiptResult.Status = "applied"
+	}
 	receiptResult.Verification = "response_received"
 	receiptResult.Result = &result
 	return receiptResult, nil
@@ -246,11 +324,11 @@ func (s *Store) Verify(ctx context.Context, executor Executor, receipt string) (
 	verify := record.verify
 	used := record.used
 	s.mu.Unlock()
-	current, err := executor.Do(ctx, preview.Profile, preview.AdAccountID, verify)
+	current, objects, err := readVerificationState(ctx, executor, preview.Profile, preview.AdAccountID, verify)
 	if err != nil {
 		return OperationVerification{}, fmt.Errorf("read current state for verification: %w", err)
 	}
-	hash, err := valueHash(current.Data)
+	hash, err := valueHash(current)
 	if err != nil {
 		return OperationVerification{}, err
 	}
@@ -261,10 +339,212 @@ func (s *Store) Verify(ctx context.Context, executor Executor, receipt string) (
 			status = "unchanged"
 		}
 	}
+	for index := range objects {
+		before := preview.Before
+		if values, ok := preview.Before.(map[string]any); ok && len(verify) > 1 {
+			before = values[objects[index].Name]
+		}
+		beforeHash, beforeErr := valueHash(before)
+		currentObjectHash, currentErr := valueHash(objects[index].Current)
+		if beforeErr == nil && currentErr == nil && beforeHash == currentObjectHash {
+			objects[index].Status = "unchanged"
+		} else {
+			objects[index].Status = "changed"
+		}
+	}
+	for _, item := range preview.Items {
+		itemStatus := "unknown"
+		if item.TargetID != "" {
+			if containsResultID(current, item.TargetID) {
+				itemStatus = "present"
+			} else {
+				itemStatus = "missing"
+			}
+		}
+		objects = append(objects, ObjectVerification{Name: "item_" + item.CorrelationID, Status: itemStatus, Current: findResultObject(current, item.TargetID)})
+	}
 	return OperationVerification{
-		Receipt: receipt, Status: status, Used: used, Current: current.Data,
+		Receipt: receipt, Status: status, Used: used, Current: current,
 		CurrentHash: hash, PreviewHash: preview.CurrentHash, ExpectedDiff: preview.Diff,
+		Objects: objects,
 	}, nil
+}
+
+func readVerificationState(ctx context.Context, executor Executor, profile, adAccountID string, reads []VerificationRead) (any, []ObjectVerification, error) {
+	values := make(map[string]any, len(reads))
+	objects := make([]ObjectVerification, 0, len(reads))
+	firstName := ""
+	for index, read := range reads {
+		name := read.Name
+		if name == "" {
+			name = fmt.Sprintf("object_%d", index+1)
+		}
+		if _, exists := values[name]; exists {
+			return nil, nil, fmt.Errorf("duplicate verification read name %q", name)
+		}
+		if index == 0 {
+			firstName = name
+		}
+		result, err := executor.Do(ctx, profile, adAccountID, read.Operation)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read %s: %w", name, err)
+		}
+		values[name] = result.Data
+		objects = append(objects, ObjectVerification{Name: name, Status: "read", Current: result.Data})
+	}
+	if len(reads) == 1 {
+		return values[firstName], objects, nil
+	}
+	return values, objects, nil
+}
+
+func unknownItemStatuses(items []OperationItemPreview) []OperationItemStatus {
+	result := make([]OperationItemStatus, 0, len(items))
+	for _, item := range items {
+		result = append(result, OperationItemStatus{CorrelationID: item.CorrelationID, TargetID: item.TargetID, Status: "unknown"})
+	}
+	return result
+}
+
+func resultItemStatuses(data any, previews []OperationItemPreview) []OperationItemStatus {
+	if len(previews) == 0 {
+		return nil
+	}
+	byCorrelation := make(map[string]OperationItemStatus, len(previews))
+	for _, preview := range previews {
+		byCorrelation[preview.CorrelationID] = OperationItemStatus{CorrelationID: preview.CorrelationID, TargetID: preview.TargetID, Status: "unknown"}
+	}
+	walkResultItems(data, byCorrelation)
+	result := make([]OperationItemStatus, 0, len(previews))
+	for _, preview := range previews {
+		result = append(result, byCorrelation[preview.CorrelationID])
+	}
+	return result
+}
+
+func walkResultItems(value any, statuses map[string]OperationItemStatus) {
+	switch typed := value.(type) {
+	case map[string]any:
+		correlationID := fmt.Sprint(typed["correlationId"])
+		if current, ok := statuses[correlationID]; ok && correlationID != "<nil>" {
+			current.TargetID = firstNonEmpty(current.TargetID, fmt.Sprint(typed["id"]), findResultID(typed["result"]), findResultID(typed["data"]))
+			if failure, exists := typed["error"]; exists && failure != nil {
+				current.Status = "failed"
+				current.Error = failure
+			} else if failures, exists := typed["errors"]; exists && failures != nil {
+				current.Status = "failed"
+				current.Error = failures
+			} else if success, exists := typed["success"].(bool); exists && !success {
+				current.Status = "failed"
+				current.Error = "Apple returned success=false"
+			} else {
+				current.Status = "applied"
+			}
+			statuses[correlationID] = current
+		}
+		for _, item := range typed {
+			walkResultItems(item, statuses)
+		}
+	case []any:
+		for _, item := range typed {
+			walkResultItems(item, statuses)
+		}
+	}
+}
+
+func findResultID(value any) string {
+	if object, ok := value.(map[string]any); ok {
+		if id, exists := object["id"]; exists && id != nil {
+			return fmt.Sprint(id)
+		}
+	}
+	return ""
+}
+
+func findFirstResultID(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		if id, exists := typed["id"]; exists && id != nil {
+			return fmt.Sprint(id)
+		}
+		if result, exists := typed["result"]; exists {
+			if id := findFirstResultID(result); id != "" {
+				return id
+			}
+		}
+		for key, item := range typed {
+			if key == "result" {
+				continue
+			}
+			if id := findFirstResultID(item); id != "" {
+				return id
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if id := findFirstResultID(item); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+func containsResultID(value any, expected string) bool {
+	return findResultObject(value, expected) != nil
+}
+
+func findResultObject(value any, expected string) any {
+	if expected == "" {
+		return nil
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		if id, exists := typed["id"]; exists && fmt.Sprint(id) == expected {
+			return typed
+		}
+		for _, item := range typed {
+			if found := findResultObject(item, expected); found != nil {
+				return found
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if found := findResultObject(item, expected); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" && value != "<nil>" {
+			return value
+		}
+	}
+	return ""
+}
+
+func aggregateItemStatus(items []OperationItemStatus) string {
+	if len(items) == 0 {
+		return ""
+	}
+	counts := map[string]int{}
+	for _, item := range items {
+		counts[item.Status]++
+	}
+	if counts["applied"] == len(items) {
+		return "applied"
+	}
+	if counts["failed"] == len(items) {
+		return "failed"
+	}
+	if counts["unknown"] == len(items) {
+		return "unknown"
+	}
+	return "partial"
 }
 
 func valueHash(value any) (string, error) {
@@ -333,7 +613,7 @@ func canonicalizeForHash(value any, field string) (any, error) {
 
 func unorderedHashField(field string) bool {
 	switch field {
-	case "systemStatusReasons", "countries", "countryOrRegionCodes":
+	case "systemStatusReasons", "countries", "countryOrRegionCodes", "result", "include", "exclude":
 		return true
 	default:
 		return false

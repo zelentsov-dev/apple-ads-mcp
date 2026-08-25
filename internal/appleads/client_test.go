@@ -297,6 +297,12 @@ func TestMoneyAndTemporalTypes(t *testing.T) {
 	if err := json.Unmarshal([]byte(`"2026-08-24T10:00:00Z"`), &timestamp); err != nil {
 		t.Fatal(err)
 	}
+	if err := json.Unmarshal([]byte(`"2026-08-24T10:00:00.000"`), &timestamp); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`"2026-08-24 10:00:00"`), &timestamp); err == nil {
+		t.Fatal("timestamp without ISO 8601 T separator must be rejected")
+	}
 }
 
 func TestResponseSizeLimitAndUnknownEnum(t *testing.T) {

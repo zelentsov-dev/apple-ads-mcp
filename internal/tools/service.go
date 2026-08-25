@@ -10,13 +10,21 @@ import (
 )
 
 type Service struct {
-	manager     *appleads.Manager
-	allowWrites bool
-	version     string
+	manager      *appleads.Manager
+	allowWrites  bool
+	allowDeletes bool
+	version      string
+	policyPath   string
+	billingPath  string
+	historyRoot  string
 }
 
 func NewService(manager *appleads.Manager, allowWrites bool, version string) *Service {
-	return &Service{manager: manager, allowWrites: allowWrites, version: version}
+	return NewServiceWithOptions(manager, allowWrites, false, version, "", "", "")
+}
+
+func NewServiceWithOptions(manager *appleads.Manager, allowWrites, allowDeletes bool, version, policyPath, billingPath, historyRoot string) *Service {
+	return &Service{manager: manager, allowWrites: allowWrites, allowDeletes: allowDeletes, version: version, policyPath: policyPath, billingPath: billingPath, historyRoot: historyRoot}
 }
 
 func ReadSpecs() []Spec {
@@ -73,6 +81,11 @@ func ReadSpecs() []Spec {
 		{Name: "creatives_query", Description: "Query bounded App Store creatives with endpoint-specific filters.", Class: "read"},
 		{Name: "shared_budgets_query", Description: "Query bounded shared-budget metadata without invoice contacts.", Class: "read"},
 		{Name: "campaign_inventory", Description: "Read a campaign and bounded child inventory for safe auditing.", Class: "read"},
+		{Name: "optimization_policies_list", Description: "List named local optimization policies without credentials or account data.", Class: "read"},
+		{Name: "optimization_policy_get", Description: "Read one named optimization policy with resolved balanced thresholds.", Class: "read"},
+		{Name: "optimization_baseline", Description: "Build a bounded 28-day Apple Ads performance baseline for a named policy.", Class: "read"},
+		{Name: "optimization_plan", Description: "Build an on-demand bounded optimization plan without creating a receipt.", Class: "read"},
+		{Name: "optimization_history", Description: "Read bounded local decisions and verification history for a named policy.", Class: "read"},
 	}
 }
 
@@ -83,6 +96,7 @@ func (s *Service) RegisterReadTools(server *mcp.Server) {
 	s.registerQueries(server)
 	s.registerAudits(server)
 	s.registerResources(server)
+	s.registerOptimizationReadTools(server)
 }
 
 func (s *Service) registerNoInput(server *mcp.Server) {
@@ -91,9 +105,12 @@ func (s *Service) registerNoInput(server *mcp.Server) {
 		if s.allowWrites {
 			mode = "writes require profile opt-in and a valid preview receipt"
 		}
+		if s.allowWrites && s.allowDeletes {
+			mode = "writes and separately gated deletes require profile opt-in and a valid preview receipt"
+		}
 		output := Output{Summary: "Apple Ads MCP is ready", Data: map[string]any{
 			"name": "apple-ads-mcp", "version": s.version, "api": "Apple Ads Platform API v1",
-			"contractVersion": "0.2", "baseUrl": appleads.BaseURL, "mode": mode, "maxItemsPerArray": MaxItems,
+			"contractVersion": "0.3", "baseUrl": appleads.BaseURL, "mode": mode, "maxItemsPerArray": MaxItems,
 			"placements": []string{"APPSTORE_SEARCH_RESULTS", "APPSTORE_SEARCH_TAB", "APPSTORE_TODAY_TAB", "APPSTORE_PRODUCT_PAGES"},
 			"legacyV5":   false, "appleMaps": false, "rawRequestTool": false,
 		}}

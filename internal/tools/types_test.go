@@ -64,6 +64,12 @@ func TestCampaignReportSelectorAndEndpointRules(t *testing.T) {
 	if _, err := (QueryInput{TimeRange: &TimeRangeInput{Start: "2026-08-01", End: "2026-08-02", TimeZone: "UTC"}}).reportRequest("searchterms"); err == nil {
 		t.Fatal("search-term report must reject UTC")
 	}
+	if _, err := (QueryInput{
+		Fields:    []string{"date", "localSpend"},
+		TimeRange: &TimeRangeInput{Start: "2026-08-01", End: "2026-08-14", Granularity: "DAILY", TimeZone: "UTC"},
+	}).reportRequest("campaigns"); err == nil {
+		t.Fatal("Apple rejects date as a selected report field")
+	}
 }
 
 func TestNullQueryOperatorOmitsValueAndNormalizesIDs(t *testing.T) {
@@ -103,6 +109,21 @@ func TestPublicOutputRemovesBillingPIIRecursively(t *testing.T) {
 	nested := value["nested"].([]any)[0].(map[string]any)
 	if _, exists := nested["primaryBuyerEmail"]; exists || nested["amount"] != "10.00" {
 		t.Fatalf("nested=%#v", nested)
+	}
+}
+
+func TestOptimizationRecommendationMoneyFields(t *testing.T) {
+	recommendation := map[string]any{
+		"suggestedDailyBudgetAmount": map[string]any{"amount": "25.00", "currency": "usd"},
+		"recommendedTargetCPA":       map[string]any{"amount": "8.50", "currency": "USD"},
+	}
+	budget, err := moneyFromObject(recommendation["suggestedDailyBudgetAmount"])
+	if err != nil || budget.Amount != "25.00" || budget.Currency != "USD" {
+		t.Fatalf("budget=%+v err=%v", budget, err)
+	}
+	target, err := moneyFromObject(recommendation["recommendedTargetCPA"])
+	if err != nil || target.Amount != "8.50" || target.Currency != "USD" {
+		t.Fatalf("target=%+v err=%v", target, err)
 	}
 }
 

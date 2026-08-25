@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,22 +41,33 @@ type OperationPreview struct {
 
 type OperationImpact struct {
 	SpendAffecting bool            `json:"spendAffecting"`
+	Destructive    bool            `json:"destructive,omitempty"`
 	Placement      string          `json:"placement,omitempty"`
 	ParentIDs      []string        `json:"parentIds,omitempty"`
 	ObjectCount    int             `json:"objectCount"`
 	Currency       string          `json:"currency,omitempty"`
 	MaximumAmount  *appleads.Money `json:"maximumAmount,omitempty"`
+	Policy         string          `json:"policy,omitempty"`
+	PrivateHash    string          `json:"privatePayloadHash,omitempty"`
 }
 
 type OperationItemPreview struct {
 	CorrelationID string         `json:"correlationId"`
+	CampaignID    string         `json:"campaignId,omitempty"`
+	ResourceType  string         `json:"resourceType,omitempty"`
+	Action        string         `json:"action,omitempty"`
+	Reason        string         `json:"reason,omitempty"`
 	TargetID      string         `json:"targetId,omitempty"`
 	Before        any            `json:"before,omitempty"`
 	After         map[string]any `json:"after"`
+	DependsOn     []string       `json:"dependsOn,omitempty"`
 }
 
 type OperationItemStatus struct {
 	CorrelationID string `json:"correlationId"`
+	CampaignID    string `json:"campaignId,omitempty"`
+	ResourceType  string `json:"resourceType,omitempty"`
+	Action        string `json:"action,omitempty"`
 	TargetID      string `json:"targetId,omitempty"`
 	Status        string `json:"status"`
 	Error         any    `json:"error,omitempty"`
@@ -91,8 +103,9 @@ type ObjectVerification struct {
 }
 
 type VerificationRead struct {
-	Name      string
-	Operation appleads.Operation
+	Name          string
+	Operation     appleads.Operation
+	ExpectDeleted bool
 }
 
 type PreviewOptions struct {
@@ -100,10 +113,16 @@ type PreviewOptions struct {
 	Items  []OperationItemPreview
 }
 
+type SequenceStep struct {
+	Item     OperationItemPreview
+	Mutation appleads.Operation
+}
+
 type record struct {
 	preview  OperationPreview
 	verify   []VerificationRead
 	mutation appleads.Operation
+	sequence []SequenceStep
 	used     bool
 	size     int
 }
@@ -160,7 +179,11 @@ func (s *Store) PreviewComposite(ctx context.Context, executor Executor, profile
 	if err != nil {
 		return OperationPreview{}, fmt.Errorf("size operation payload: %w", err)
 	}
-	recordSize := len(currentData)*2 + len(payloadData)*4 + 4096
+	mutationSize, err := mutation.EncodedBodySize()
+	if err != nil {
+		return OperationPreview{}, err
+	}
+	recordSize := len(currentData)*2 + len(payloadData)*4 + mutationSize + 4096
 	receipt, err := randomReceipt()
 	if err != nil {
 		return OperationPreview{}, err
@@ -172,7 +195,7 @@ func (s *Store) PreviewComposite(ctx context.Context, executor Executor, profile
 		AdAccountID:   adAccountID,
 		Operation:     name,
 		TargetIDs:     append([]string(nil), targetIDs...),
-		Before:        current,
+		Before:        redactPrivateData(current),
 		After:         cloneMap(payload),
 		Diff:          map[string]any{"set": cloneMap(payload)},
 		CurrentHash:   currentHash,
@@ -189,6 +212,74 @@ func (s *Store) PreviewComposite(ctx context.Context, executor Executor, profile
 	}
 	s.records[receipt] = &record{preview: preview, verify: append([]VerificationRead(nil), verify...), mutation: mutation, size: recordSize}
 	s.total += recordSize
+	s.mu.Unlock()
+	return preview, nil
+}
+
+func (s *Store) PreviewSequence(ctx context.Context, executor Executor, profile, adAccountID, name string, targetIDs []string, verify []VerificationRead, steps []SequenceStep, impact *OperationImpact) (OperationPreview, error) {
+	if len(steps) == 0 || len(steps) > 100 {
+		return OperationPreview{}, errors.New("sequence must contain 1 to 100 mutation steps")
+	}
+	if len(verify) == 0 {
+		return OperationPreview{}, errors.New("sequence preview requires at least one verification read")
+	}
+	items := make([]OperationItemPreview, 0, len(steps))
+	payloadItems := make([]any, 0, len(steps))
+	seen := map[string]struct{}{}
+	sequenceSize := 0
+	for _, step := range steps {
+		if !step.Mutation.IsMutation() {
+			return OperationPreview{}, errors.New("sequence contains a non-mutation operation")
+		}
+		bodySize, err := step.Mutation.EncodedBodySize()
+		if err != nil {
+			return OperationPreview{}, err
+		}
+		sequenceSize += bodySize
+		if strings.TrimSpace(step.Item.CorrelationID) == "" {
+			return OperationPreview{}, errors.New("sequence correlationId is required")
+		}
+		if _, exists := seen[step.Item.CorrelationID]; exists {
+			return OperationPreview{}, fmt.Errorf("duplicate sequence correlationId %q", step.Item.CorrelationID)
+		}
+		seen[step.Item.CorrelationID] = struct{}{}
+		items = append(items, step.Item)
+		payloadItems = append(payloadItems, map[string]any{
+			"correlationId": step.Item.CorrelationID,
+			"campaignId":    step.Item.CampaignID,
+			"resourceType":  step.Item.ResourceType,
+			"action":        step.Item.Action,
+			"reason":        step.Item.Reason,
+			"targetId":      step.Item.TargetID,
+			"after":         step.Item.After,
+			"dependsOn":     step.Item.DependsOn,
+		})
+	}
+	for _, item := range items {
+		for _, dependency := range item.DependsOn {
+			if _, exists := seen[dependency]; !exists {
+				return OperationPreview{}, fmt.Errorf("sequence dependency %q does not exist", dependency)
+			}
+		}
+	}
+	payload := map[string]any{"actions": payloadItems}
+	placeholder, _ := appleads.ResourceUpdate("campaigns", "sequence-placeholder", map[string]any{"status": "PAUSED"})
+	preview, err := s.PreviewComposite(ctx, executor, profile, adAccountID, name, targetIDs, payload, verify, placeholder, PreviewOptions{Impact: impact, Items: items})
+	if err != nil {
+		return OperationPreview{}, err
+	}
+	s.mu.Lock()
+	if item, exists := s.records[preview.Receipt]; exists {
+		if sequenceSize > maxStoredReceiptData-s.total {
+			s.total -= item.size
+			delete(s.records, preview.Receipt)
+			s.mu.Unlock()
+			return OperationPreview{}, errors.New("receipt capacity reached; sequence payload is too large")
+		}
+		item.sequence = append([]SequenceStep(nil), steps...)
+		item.size += sequenceSize
+		s.total += sequenceSize
+	}
 	s.mu.Unlock()
 	return preview, nil
 }
@@ -228,6 +319,7 @@ func (s *Store) Apply(ctx context.Context, executor Executor, receipt string) (O
 	preview := record.preview
 	verify := record.verify
 	mutation := record.mutation
+	sequence := append([]SequenceStep(nil), record.sequence...)
 	s.mu.Unlock()
 
 	current, _, err := readVerificationState(ctx, executor, preview.Profile, preview.AdAccountID, verify)
@@ -254,6 +346,9 @@ func (s *Store) Apply(ctx context.Context, executor Executor, receipt string) (O
 	record.used = true
 	s.mu.Unlock()
 
+	if len(sequence) > 0 {
+		return s.applySequence(ctx, executor, receipt, preview, sequence), nil
+	}
 	result, err := executor.Do(ctx, preview.Profile, preview.AdAccountID, mutation)
 	receiptResult := OperationReceipt{
 		Receipt:     receipt,
@@ -299,8 +394,88 @@ func (s *Store) Apply(ctx context.Context, executor Executor, receipt string) (O
 		receiptResult.Status = "applied"
 	}
 	receiptResult.Verification = "response_received"
+	result.Data = redactPrivateData(result.Data)
 	receiptResult.Result = &result
 	return receiptResult, nil
+}
+
+func (s *Store) applySequence(ctx context.Context, executor Executor, receipt string, preview OperationPreview, sequence []SequenceStep) OperationReceipt {
+	result := OperationReceipt{
+		Receipt: receipt, Operation: preview.Operation, Profile: preview.Profile, AdAccountID: preview.AdAccountID,
+		AppliedAt: s.now().UTC().Format(time.RFC3339), Verification: "response_received",
+	}
+	statuses := make(map[string]string, len(sequence))
+	stop := false
+	for _, step := range sequence {
+		status := OperationItemStatus{
+			CorrelationID: step.Item.CorrelationID, CampaignID: step.Item.CampaignID,
+			ResourceType: step.Item.ResourceType, Action: step.Item.Action, TargetID: step.Item.TargetID,
+		}
+		if stop {
+			status.Status = "not_attempted"
+			result.Items = append(result.Items, status)
+			statuses[step.Item.CorrelationID] = status.Status
+			continue
+		}
+		for _, dependency := range step.Item.DependsOn {
+			if statuses[dependency] != "applied" {
+				status.Status = "skipped"
+				status.Error = "dependency was not applied"
+				break
+			}
+		}
+		if status.Status == "skipped" {
+			result.Items = append(result.Items, status)
+			statuses[step.Item.CorrelationID] = status.Status
+			continue
+		}
+		response, err := executor.Do(ctx, preview.Profile, preview.AdAccountID, step.Mutation)
+		if err != nil {
+			var ambiguous *appleads.AmbiguousWriteError
+			if errors.As(err, &ambiguous) {
+				status.Status = "unknown"
+				status.Error = "write outcome is unknown"
+				result.Verification = "committed_unverified"
+				stop = true
+			} else {
+				status.Status = "failed"
+				status.Error = publicOperationError(err)
+				var apiError *appleads.APIError
+				if !errors.As(err, &apiError) || apiError.HTTPStatus < 400 || apiError.HTTPStatus >= 500 {
+					stop = true
+				}
+			}
+		} else {
+			status.Status = "applied"
+			if status.TargetID == "" {
+				status.TargetID = findFirstResultID(response.Data)
+			}
+		}
+		result.Items = append(result.Items, status)
+		statuses[step.Item.CorrelationID] = status.Status
+	}
+	result.Status = aggregateItemStatus(result.Items)
+	if containsItemStatus(result.Items, "unknown") {
+		result.Status = "unknown"
+	}
+	return result
+}
+
+func publicOperationError(err error) any {
+	var apiError *appleads.APIError
+	if errors.As(err, &apiError) {
+		return apiError
+	}
+	return "operation failed"
+}
+
+func containsItemStatus(items []OperationItemStatus, status string) bool {
+	for _, item := range items {
+		if item.Status == status {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) Inspect(receipt string) (OperationPreview, bool, error) {
@@ -340,6 +515,15 @@ func (s *Store) Verify(ctx context.Context, executor Executor, receipt string) (
 		}
 	}
 	for index := range objects {
+		objects[index].Current = redactPrivateData(objects[index].Current)
+	}
+	for index := range objects {
+		if current, ok := objects[index].Current.(map[string]any); ok {
+			if deleted, ok := current["deleted"].(bool); ok && deleted {
+				objects[index].Status = "deleted"
+				continue
+			}
+		}
 		before := preview.Before
 		if values, ok := preview.Before.(map[string]any); ok && len(verify) > 1 {
 			before = values[objects[index].Name]
@@ -350,6 +534,12 @@ func (s *Store) Verify(ctx context.Context, executor Executor, receipt string) (
 			objects[index].Status = "unchanged"
 		} else {
 			objects[index].Status = "changed"
+		}
+	}
+	for _, object := range objects {
+		if object.Name == "target" && object.Status == "deleted" {
+			status = "deleted"
+			break
 		}
 	}
 	for _, item := range preview.Items {
@@ -363,6 +553,7 @@ func (s *Store) Verify(ctx context.Context, executor Executor, receipt string) (
 		}
 		objects = append(objects, ObjectVerification{Name: "item_" + item.CorrelationID, Status: itemStatus, Current: findResultObject(current, item.TargetID)})
 	}
+	current = redactPrivateData(current)
 	return OperationVerification{
 		Receipt: receipt, Status: status, Used: used, Current: current,
 		CurrentHash: hash, PreviewHash: preview.CurrentHash, ExpectedDiff: preview.Diff,
@@ -387,6 +578,13 @@ func readVerificationState(ctx context.Context, executor Executor, profile, adAc
 		}
 		result, err := executor.Do(ctx, profile, adAccountID, read.Operation)
 		if err != nil {
+			var apiError *appleads.APIError
+			if read.ExpectDeleted && errors.As(err, &apiError) && apiError.HTTPStatus == 404 {
+				deleted := map[string]any{"deleted": true}
+				values[name] = deleted
+				objects = append(objects, ObjectVerification{Name: name, Status: "deleted", Current: deleted})
+				continue
+			}
 			return nil, nil, fmt.Errorf("read %s: %w", name, err)
 		}
 		values[name] = result.Data
@@ -401,7 +599,7 @@ func readVerificationState(ctx context.Context, executor Executor, profile, adAc
 func unknownItemStatuses(items []OperationItemPreview) []OperationItemStatus {
 	result := make([]OperationItemStatus, 0, len(items))
 	for _, item := range items {
-		result = append(result, OperationItemStatus{CorrelationID: item.CorrelationID, TargetID: item.TargetID, Status: "unknown"})
+		result = append(result, OperationItemStatus{CorrelationID: item.CorrelationID, CampaignID: item.CampaignID, ResourceType: item.ResourceType, Action: item.Action, TargetID: item.TargetID, Status: "unknown"})
 	}
 	return result
 }
@@ -412,7 +610,7 @@ func resultItemStatuses(data any, previews []OperationItemPreview) []OperationIt
 	}
 	byCorrelation := make(map[string]OperationItemStatus, len(previews))
 	for _, preview := range previews {
-		byCorrelation[preview.CorrelationID] = OperationItemStatus{CorrelationID: preview.CorrelationID, TargetID: preview.TargetID, Status: "unknown"}
+		byCorrelation[preview.CorrelationID] = OperationItemStatus{CorrelationID: preview.CorrelationID, CampaignID: preview.CampaignID, ResourceType: preview.ResourceType, Action: preview.Action, TargetID: preview.TargetID, Status: "unknown"}
 	}
 	walkResultItems(data, byCorrelation)
 	result := make([]OperationItemStatus, 0, len(previews))
@@ -613,7 +811,7 @@ func canonicalizeForHash(value any, field string) (any, error) {
 
 func unorderedHashField(field string) bool {
 	switch field {
-	case "systemStatusReasons", "countries", "countryOrRegionCodes", "result", "include", "exclude":
+	case "systemStatusReasons", "countries", "countryOrRegionCodes", "sharedBudgets", "result", "include", "exclude":
 		return true
 	default:
 		return false
@@ -634,4 +832,36 @@ func cloneMap(value map[string]any) map[string]any {
 		result[key] = item
 	}
 	return result
+}
+
+func redactPrivateData(value any) any {
+	switch typed := value.(type) {
+	case []any:
+		result := make([]any, len(typed))
+		for index, item := range typed {
+			result[index] = redactPrivateData(item)
+		}
+		return result
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for key, item := range typed {
+			if privateDataKey(key) {
+				continue
+			}
+			result[key] = redactPrivateData(item)
+		}
+		return result
+	default:
+		return value
+	}
+}
+
+func privateDataKey(key string) bool {
+	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(key))
+	return strings.Contains(normalized, "invoicedetail") ||
+		strings.Contains(normalized, "invoicecontact") ||
+		strings.Contains(normalized, "billingemail") ||
+		strings.Contains(normalized, "billingcontact") ||
+		strings.HasPrefix(normalized, "primarybuyer") ||
+		strings.HasPrefix(normalized, "buyeremail")
 }

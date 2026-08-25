@@ -6,17 +6,25 @@ v0.2 delivers bounded account inventory, typed App Store schemas, centralized pl
 
 The release covers all four App Store placements. Live availability remains an Apple account/app/storefront decision. Manual acceptance uses separate clearly named `PAUSED` campaigns and never enables delivery.
 
-Deletion, account mutation, shared-budget mutation, budget orders, Apple Maps, and legacy v5 remain intentionally unavailable.
+Account mutation, Apple Maps, and legacy v5 remain intentionally unavailable.
 
-## v0.3 — lifecycle and budget foundations
+## v0.3 — on-demand optimization and lifecycle
 
-- Design soft-delete previews with full parent/child inventory revalidation and explicit cascade impact.
-- Add typed shared-budget and budget-order operations only when the current Platform API exposes a complete App Store contract.
+- Named learning and active policies bind explicit accounts, apps, campaigns, budget caps, and permissions.
+- A balanced Apple-only optimizer produces bounded 28-day baselines and on-demand plans with 7/7 comparisons and cooldowns.
+- One composite receipt applies up to 100 ordered actions with full drift checks, dependencies, partial outcomes, and no retry or rollback.
+- Typed shared-budget create/update/assign/unassign supports eligible `LOC` accounts while private billing PII stays local.
+- Separately gated lifecycle tools require exact expected text, PAUSED parents, bounded cascade inventory, and post-delete verification.
+
+There is no scheduler, background spending, automatic recommendation apply, or optimizer-generated deletion.
+
+## v0.4 — attribution and decision quality
+
+- Add optional external-attribution adapters without weakening Apple-only operation safety.
+- Compare install, trial, subscription, and revenue outcomes when a verified attribution contract is available.
+- Add redacted exportable decision summaries and policy simulation fixtures.
 - Expand DPP/CPP creative diagnostics and placement-specific rejection guidance.
-- Add exportable, redacted local acceptance summaries without account data.
 - Track new App Store resources and enums discovered by the weekly upstream audit.
-
-No automatic budget optimization or mass recommendation apply is planned for v0.3.
 
 ## v1.0 — stable production contract
 

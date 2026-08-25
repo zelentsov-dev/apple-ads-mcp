@@ -28,11 +28,13 @@ type Profile struct {
 	PrivateKeyPath     string `json:"privateKeyPath" jsonschema:"absolute path to the ES256 private key"`
 	DefaultAdAccountID string `json:"defaultAdAccountId,omitempty" jsonschema:"default Apple Ads ad account ID"`
 	AllowWrites        bool   `json:"allowWrites,omitempty" jsonschema:"whether this profile permits mutation previews and applies"`
+	AllowDeletes       bool   `json:"allowDeletes,omitempty" jsonschema:"whether this profile permits destructive receipt-gated deletes"`
 }
 
 type PublicProfile struct {
 	Name             string `json:"name"`
 	AllowWrites      bool   `json:"allowWrites"`
+	AllowDeletes     bool   `json:"allowDeletes"`
 	CredentialSource string `json:"credentialSource"`
 }
 
@@ -202,6 +204,7 @@ func (c Config) PublicProfiles(source string) []PublicProfile {
 		profiles = append(profiles, PublicProfile{
 			Name:             profile.Name,
 			AllowWrites:      profile.AllowWrites,
+			AllowDeletes:     profile.AllowDeletes,
 			CredentialSource: publicCredentialSource(source),
 		})
 	}
@@ -267,6 +270,10 @@ func fromEnvironment() (Config, bool, error) {
 	if err != nil {
 		return Config{}, false, fmt.Errorf("parse APPLE_ADS_ALLOW_WRITES: %w", err)
 	}
+	allowDeletes, err := strconv.ParseBool(defaultString(os.Getenv("APPLE_ADS_ALLOW_DELETES"), "false"))
+	if err != nil {
+		return Config{}, false, fmt.Errorf("parse APPLE_ADS_ALLOW_DELETES: %w", err)
+	}
 	cfg := Config{Profiles: []Profile{{
 		Name:               defaultString(os.Getenv("APPLE_ADS_PROFILE"), "default"),
 		ClientID:           clientID,
@@ -275,6 +282,7 @@ func fromEnvironment() (Config, bool, error) {
 		PrivateKeyPath:     keyPath,
 		DefaultAdAccountID: strings.TrimSpace(os.Getenv("APPLE_ADS_AD_ACCOUNT_ID")),
 		AllowWrites:        allowWrites,
+		AllowDeletes:       allowDeletes,
 	}}}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, false, fmt.Errorf("validate environment config: %w", err)

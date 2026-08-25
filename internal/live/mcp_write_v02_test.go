@@ -206,7 +206,8 @@ func TestMCPV02WriteHelper(t *testing.T) {
 	if err != nil {
 		os.Exit(2)
 	}
-	if err := mcpserver.RunStdio(context.Background(), appleads.NewManager(cfg, source), true); err != nil {
+	options := mcpserver.Options{AllowWrites: true, AllowDeletes: strings.EqualFold(os.Getenv("APPLE_ADS_MCP_LIVE_DELETE_HELPER"), "true")}
+	if err := mcpserver.RunStdioWithOptions(context.Background(), appleads.NewManager(cfg, source), options); err != nil {
 		os.Exit(2)
 	}
 	os.Exit(0)

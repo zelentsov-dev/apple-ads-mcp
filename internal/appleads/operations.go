@@ -25,6 +25,14 @@ func (o Operation) Path() string          { return o.path }
 func (o Operation) IsMutation() bool      { return o.mutation }
 func (o Operation) RequiresAccount() bool { return o.scoped }
 
+func (o Operation) EncodedBodySize() (int, error) {
+	data, err := json.Marshal(o.body)
+	if err != nil {
+		return 0, fmt.Errorf("encode operation body: %w", err)
+	}
+	return len(data), nil
+}
+
 type SearchAppsParams struct {
 	Query           string
 	ReturnOwnedApps bool
@@ -359,6 +367,17 @@ func ResourceUpdate(resource, id string, body any) (Operation, error) {
 		return Operation{}, err
 	}
 	return write(http.MethodPut, path, cloned), nil
+}
+
+func ResourceDelete(resource, id string) (Operation, error) {
+	if !allowedResource(resource) {
+		return Operation{}, fmt.Errorf("unsupported resource %q", resource)
+	}
+	path, err := resourcePath(resource, id)
+	if err != nil {
+		return Operation{}, err
+	}
+	return write(http.MethodDelete, path, nil), nil
 }
 
 func allowedResource(resource string) bool {

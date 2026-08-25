@@ -1,6 +1,9 @@
 package appleads
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+)
 
 func TestV02OperationPathsAndScopes(t *testing.T) {
 	account, err := AdAccount("123456789")
@@ -41,5 +44,29 @@ func TestV02OperationValidation(t *testing.T) {
 	}
 	if _, err := RecommendationAction("daily-budgets", "apply-all", nil); err == nil {
 		t.Fatal("apply-all must not be exposed")
+	}
+}
+
+func TestV03DeleteIsTypedMutationWithoutRetry(t *testing.T) {
+	operation, err := ResourceDelete("campaigns", "123")
+	if err != nil || operation.Path() != "campaigns/123" || operation.Method() != http.MethodDelete || !operation.IsMutation() || operation.retryReads {
+		t.Fatalf("operation=%+v err=%v", operation, err)
+	}
+	if _, err := ResourceDelete("accounts", "123"); err == nil {
+		t.Fatal("account delete must remain unavailable")
+	}
+}
+
+func TestOperationEncodedBodySize(t *testing.T) {
+	operation, err := ResourceCreate("shared-budgets", map[string]any{"invoiceDetail": map[string]any{"billingEmail": "private@example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	size, err := operation.EncodedBodySize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size < len("private@example.com") {
+		t.Fatalf("encoded body size=%d", size)
 	}
 }

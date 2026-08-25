@@ -21,6 +21,10 @@ Start with a read-only Apple role. Enable write permissions only after read tool
 6. Run `apps_eligibility` for every target storefront and placement.
 7. Run `account_health` for the explicit app when a full readiness decision is needed.
 
+For optimization, create and validate a named policy with `apple-ads-mcp optimization policy init`, `optimization policy validate`, and `optimization doctor`. Start in `learning` mode. Move to `active` only after the operator has chosen a business `targetInstallCPA` and explicit budget/action caps.
+
+For an eligible `LOC` shared-budget workflow, initialize a private local billing profile with `apple-ads-mcp billing profile init`. The MCP receives only its local name. Never paste buyer names or billing email addresses into an MCP call or chat.
+
 Do not treat App Store availability alone as placement eligibility. Missing ACL, `APPSTORE_APP_MANUAL`, content-provider delegation, ownership, currency, or placement eligibility is a readiness failure that must be reported before preview.
 
 App Store Connect access and Apple Ads API access are separate. Initial App Store Connect account linking and Apple Ads API-user administration remain web administration tasks when Apple does not expose an API operation for them.

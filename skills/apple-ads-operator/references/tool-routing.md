@@ -20,7 +20,7 @@
 - Targeting keywords: `keywords_query`
 - Negative keywords: `negative_keywords_query`
 - Ads and creatives: `ads_query`, `creatives_query`
-- Shared budgets, read-only: `shared_budgets_query`
+- Shared budgets: `shared_budgets_query`, `shared_budget_get`
 - One campaign and bounded children: `campaign_inventory`
 
 Use `pagination.pageSize` up to 200 and continue with `next`. Prefer a campaign-scoped inventory call before any multi-object change.
@@ -48,10 +48,24 @@ Keep report ranges explicit and bounded. Paginate instead of requesting an entir
 
 Report tools accept endpoint-specific selectors, fields, filters, groupings, and bounded pagination. Do not invent a generic report request or place an arbitrary Apple envelope inside the input.
 
+## Optimization
+
+- Policies: `optimization_policies_list`, `optimization_policy_get`
+- Evidence: `optimization_baseline`
+- Read-only decisions: `optimization_plan`
+- Local bounded history: `optimization_history`
+- Authorized composite mutation: `optimization_plan_preview`
+
+Use a `learning` policy to establish a 28-day baseline and show Apple recommendations without an apply receipt. Use `active` only when the policy contains the operator's target install CPA, caps, and permissions. Optimization is on-demand; never imply that the server will run later by itself.
+
 ## Mutations
 
 Use the most specific preview tool: budget, countries, schedule, targeting, Search Match, bid, pause, or resume. Use bulk preview tools only for at most 100 unique correlation IDs in one campaign/ad-group scope.
 
-Apply only through `operations_apply`. After apply, call `operations_verify` and the matching get/query tool. After an ambiguous result, verify before any new write; `operations_inspect` only reports receipt metadata. There is no raw API or delete tool.
+Apply only through `operations_apply`. After apply, call `operations_verify` and the matching get/query tool. After an ambiguous result, verify before any new write; `operations_inspect` only reports receipt metadata. There is no raw API tool.
+
+Use `campaign_bid_strategy_preview` for MANUAL_CPT or an Apple-eligible Search Results `MAX_CONVERSIONS` change. Use typed shared-budget previews only when `ad_account_get` reports `LOC`; MCP input contains a local `billingProfile` name, never billing PII.
+
+Delete tools are specialized by resource. Use them only for an explicitly authorized irreversible task after reading the full cascade inventory and exact expected text. Delete is never part of optimization.
 
 For recommendation apply, always provide `maximumAmount`. Use Apple's current suggestion only when it is in the account currency and does not exceed the cap. Do not simulate `apply all` by issuing repeated calls.

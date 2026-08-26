@@ -10,7 +10,7 @@ Analysis, auditing, research, and recommendations do not authorize changes. Prev
 
 - A preview is non-mutating.
 - A receipt is bound to profile, ad account, operation, target, normalized payload, and current-state fingerprint. Composite and bulk receipts bind all affected inventory.
-- Receipts expire after 10 minutes and are single-use.
+- Preview receipts expire after 10 minutes and are single-use for apply. An unresolved optimization receipt remains verifiable after restart through its owner-only sanitized local recovery recipe; keep the original receipt because only its SHA-256 hash is stored.
 - Apply re-reads current state and rejects drift.
 - Never substitute identifiers or values after preview.
 
@@ -32,11 +32,13 @@ Apple does not allow individual deletion of a Default Product Page ad or the Def
 
 Shared-budget billing data stays in a local owner-only billing profile. MCP calls, logs, history, and preview output may contain only the profile reference and a private payload hash, never buyer names or emails.
 
+Optimization apply durably writes a local receipt-hash-bound `applying` intent and typed recovery recipe before contacting Apple. Treat a reconciliation-required baseline as a hard stop, including after an inconclusive verification. Only a conclusive `operations_verify` can clear an ambiguous outcome, including after restart. Reconciled applied actions retain their original cooldown time. Auto-resume is allowed only while the verified optimizer pause still matches Apple's current `modificationTime`.
+
 ## Failure handling
 
 - Validation or Apple `4xx`: do not retry without correcting the request.
 - Rate limit: honor retry timing and keep retries bounded.
-- Ambiguous mutation timeout: do not repeat the write. Use `operations_verify` and read the target directly; use `operations_inspect` only for receipt metadata.
+- Ambiguous mutation timeout: do not repeat the write. Use `operations_verify` and read the target directly; use `operations_inspect` only for in-process receipt metadata. An ambiguous create without an Apple-returned ID remains inconclusive even if one matching object appears in a bounded query page.
 - Partial bulk result: verify every item and continue only with objects proven to be applied.
 - Drift: discard the receipt, explain the changed state, and produce a new preview only if the request still authorizes it.
 - Unexpected account, currency, app, or target: stop before preview.

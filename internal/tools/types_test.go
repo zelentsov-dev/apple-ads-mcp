@@ -53,7 +53,7 @@ func TestQueryInputBoundedRequestRejectsInvalidAdamID(t *testing.T) {
 func TestCampaignReportSelectorAndEndpointRules(t *testing.T) {
 	request, err := (QueryInput{
 		Filters: []QueryFilterInput{{Field: "id", Operator: "EQUALS", Value: "123"}},
-		Fields:  []string{"id", "localSpend", "dailyBudget"},
+		Fields:  []string{"localSpend", "tapInstalls"},
 	}).reportRequest("campaigns")
 	if err != nil || request == nil {
 		t.Fatalf("request=%#v err=%v", request, err)
@@ -69,6 +69,15 @@ func TestCampaignReportSelectorAndEndpointRules(t *testing.T) {
 		TimeRange: &TimeRangeInput{Start: "2026-08-01", End: "2026-08-14", Granularity: "DAILY", TimeZone: "UTC"},
 	}).reportRequest("campaigns"); err == nil {
 		t.Fatal("Apple rejects date as a selected report field")
+	}
+	if _, err := (QueryInput{Fields: []string{"bidStrategy"}}).reportRequest("adgroups"); err == nil {
+		t.Fatal("metadata fields must not be sent in the report fields array")
+	}
+	if _, err := (QueryInput{
+		GroupBy: []string{"deviceClass"},
+		Options: &QueryOptionsInput{IncludeRows: []string{"EMPTY_METRICS"}},
+	}).reportRequest("campaigns"); err == nil {
+		t.Fatal("EMPTY_METRICS and groupBy must be mutually exclusive")
 	}
 }
 

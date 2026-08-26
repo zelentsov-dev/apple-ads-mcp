@@ -98,7 +98,7 @@ func MutationSpecs() []Spec {
 		{Name: "shared_budget_delete_preview", Description: "Preview irreversible deletion of one unassigned LOC shared budget.", Class: "mutation_preview"},
 		{Name: "operations_apply", Description: "Apply exactly one non-expired, drift-free preview receipt.", Class: "mutation"},
 		{Name: "operations_inspect", Description: "Inspect receipt binding, expiry, and use state without applying it.", Class: "read"},
-		{Name: "operations_verify", Description: "Re-read a receipt target after an ambiguous write and return current state.", Class: "read"},
+		{Name: "operations_verify", Description: "Re-read receipt targets after an ambiguous write, including restart-safe optimization recovery, and return current state.", Class: "read"},
 	}
 }
 
@@ -136,7 +136,11 @@ func (s *Service) RegisterMutationTools(server *mcp.Server, store *operations.St
 				return failedApply(err)
 			}
 		}
-		receipt, err := store.Apply(ctx, s.manager, input.Receipt)
+		var preflight func(operations.OperationPreview) error
+		if preview.Impact != nil && preview.Impact.Policy != "" {
+			preflight = s.recordOptimizationIntent
+		}
+		receipt, err := store.ApplyWithPreflight(ctx, s.manager, input.Receipt, preflight)
 		if err != nil {
 			if preview.Impact != nil && preview.Impact.PrivateHash != "" {
 				var apiError *appleads.APIError
@@ -156,7 +160,7 @@ func (s *Service) RegisterMutationTools(server *mcp.Server, store *operations.St
 			summary = "Apple returned item-level failures; no automatic retry was attempted"
 		}
 		if err := s.recordOptimizationApply(preview, receipt); err != nil {
-			summary += "; local optimization history could not be persisted"
+			summary += "; local optimization history could not be persisted, so this policy remains blocked until operations_verify records reconciliation"
 		}
 		output := ApplyOutput{Summary: summary, Receipt: &receipt}
 		return textResult(summary, receipt.Status == "unknown"), output, nil
@@ -167,15 +171,22 @@ func (s *Service) RegisterMutationTools(server *mcp.Server, store *operations.St
 		Annotations: &mcp.ToolAnnotations{Title: "verify operation", ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &open},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input ReceiptInput) (*mcp.CallToolResult, ApplyOutput, error) {
 		verification, err := store.Verify(ctx, s.manager, input.Receipt)
+		var preview operations.OperationPreview
+		if errors.Is(err, operations.ErrReceiptNotFound) {
+			preview, verification, err = s.recoverOptimizationVerification(ctx, input.Receipt)
+		}
 		if err != nil {
 			return failedApply(err)
 		}
-		preview, _, inspectErr := store.Inspect(input.Receipt)
-		summary := "Current Apple state loaded for receipt verification"
-		if inspectErr == nil {
-			if err := s.recordOptimizationVerification(ctx, preview, verification); err != nil {
-				summary += "; local optimization history could not be persisted"
+		if preview.Receipt == "" {
+			preview, _, err = store.Inspect(input.Receipt)
+			if err != nil {
+				return failedApply(err)
 			}
+		}
+		summary := "Current Apple state loaded for receipt verification"
+		if err := s.recordOptimizationVerification(ctx, preview, verification); err != nil {
+			summary += "; local optimization history could not be persisted, so any reconciliation lock remains active"
 		}
 		output := ApplyOutput{Summary: summary, Verification: &verification}
 		return textResult(output.Summary, false), output, nil
@@ -248,7 +259,7 @@ func (s *Service) createPreviewPayload(ctx context.Context, store *operations.St
 	if err != nil {
 		return failedPreview(err)
 	}
-	preview, err := store.PreviewComposite(ctx, s.manager, account.Profile, account.AdAccountID, name, nil, payload, []operations.VerificationRead{{Name: "affected_inventory", Operation: verify}}, mutation, operations.PreviewOptions{Impact: impact})
+	preview, err := store.PreviewComposite(ctx, s.manager, account.Profile, account.AdAccountID, name, nil, payload, []operations.VerificationRead{{Name: "affected_inventory", Operation: verify}}, mutation, operations.PreviewOptions{Impact: impact, Create: &operations.CreateExpectation{Resource: resource, Expected: payload}})
 	if err != nil {
 		return failedPreview(err)
 	}
@@ -452,7 +463,7 @@ func (s *Service) writeAllowed(ctx context.Context, profileName, adAccountID str
 			return nil
 		}
 	}
-	return fmt.Errorf("Apple ACL for ad account %q has no recognized write role; roles: %s", adAccountID, strings.Join(roles, ", "))
+	return fmt.Errorf("ad account %q ACL from Apple has no recognized write role; roles: %s", adAccountID, strings.Join(roles, ", "))
 }
 
 func (s *Service) deleteAllowed(ctx context.Context, profileName, adAccountID string) error {
@@ -483,7 +494,7 @@ func isWriteRole(role string) bool {
 
 func (s *Service) ensureAppStoreMutation(ctx context.Context, account AccountInput, resource, id string, payload map[string]any, create bool) error {
 	if containsMapsValue(payload) {
-		return errors.New("Apple Maps payloads are outside this server's scope")
+		return errors.New("payloads for Apple Maps are outside this server's scope")
 	}
 	if err := s.ensurePayloadCurrency(ctx, account, payload); err != nil {
 		return err
@@ -507,7 +518,7 @@ func (s *Service) ensureAppStoreMutation(ctx context.Context, account AccountInp
 				return fmt.Errorf("verify promoted app ownership: %w", err)
 			}
 			if !containsAdamID(owned.Data, adamID) {
-				return fmt.Errorf("Apple did not confirm promotedObjectId %s as an owned app", adamID)
+				return fmt.Errorf("ownership response from Apple did not confirm promotedObjectId %s", adamID)
 			}
 			appOperation, err := appleads.App(adamID)
 			if err != nil {
@@ -669,7 +680,7 @@ func (s *Service) ensureAppStoreMutation(ctx context.Context, account AccountInp
 				return fmt.Errorf("verify creative app ownership: %w", err)
 			}
 			if !containsAdamID(owned.Data, adamID) {
-				return fmt.Errorf("Apple did not confirm creative adamId %s as an owned app", adamID)
+				return fmt.Errorf("ownership response from Apple did not confirm creative adamId %s", adamID)
 			}
 			if productPageID := stringField(parameters, "productPageId"); productPageID != "" {
 				op, err := appleads.ProductPage(productPageID)
@@ -678,10 +689,10 @@ func (s *Service) ensureAppStoreMutation(ctx context.Context, account AccountInp
 				}
 				page, err := s.manager.Do(ctx, account.Profile, account.AdAccountID, op)
 				if err != nil {
-					return fmt.Errorf("verify Custom Product Page: %w", err)
+					return fmt.Errorf("verify custom product page: %w", err)
 				}
 				if pageAdamID := findStringField(page.Data, "adamId"); pageAdamID != "" && pageAdamID != adamID {
-					return errors.New("Custom Product Page belongs to a different app")
+					return errors.New("custom product page belongs to a different app")
 				}
 			}
 		}
@@ -747,7 +758,7 @@ func (s *Service) ensurePayloadCurrency(ctx context.Context, account AccountInpu
 	}
 	accountCurrency := strings.ToUpper(findStringField(result.Data, "currency"))
 	if accountCurrency == "" {
-		return errors.New("Apple ad account response did not include currency")
+		return errors.New("ad account response from Apple did not include currency")
 	}
 	for _, currency := range currencies {
 		if strings.ToUpper(currency) != accountCurrency {
@@ -768,7 +779,7 @@ func ensureCampaignStorefronts(payload map[string]any, app any) error {
 		available[strings.ToUpper(storefront)] = struct{}{}
 	}
 	if len(available) == 0 {
-		return errors.New("Apple did not return availableStorefronts for the promoted app")
+		return errors.New("app response from Apple did not include availableStorefronts")
 	}
 	for _, country := range countries {
 		if _, ok := available[strings.ToUpper(country)]; !ok {
@@ -799,7 +810,7 @@ func (s *Service) ensureCampaignEligibility(ctx context.Context, account Account
 	}
 	for _, country := range countries {
 		if !hasEligiblePlacement(result.Data, adamID, placements[0], country) {
-			return fmt.Errorf("Apple did not confirm app %s as eligible for %s in %s", adamID, placements[0], country)
+			return fmt.Errorf("eligibility response from Apple did not confirm app %s for %s in %s", adamID, placements[0], country)
 		}
 	}
 	return nil

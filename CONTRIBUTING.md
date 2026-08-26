@@ -1,6 +1,6 @@
 # Contributing
 
-Use Go 1.26.6 or newer and keep the server compatible with the official MCP Go SDK v1.7 line.
+Use Go 1.26.7 or newer and keep the server compatible with the official MCP Go SDK v1.7 line.
 
 Before opening a pull request:
 

@@ -102,7 +102,7 @@ func (c *Client) Do(ctx context.Context, adAccountID string, operation Operation
 		}
 		return result, nil
 	}
-	return Result{}, errors.New("Apple Ads request exhausted retries")
+	return Result{}, errors.New("request to Apple Ads exhausted retries")
 }
 
 func (c *Client) doOnce(ctx context.Context, adAccountID string, operation Operation, body []byte) (Result, *http.Response, bool, error) {
@@ -138,7 +138,7 @@ func (c *Client) doOnce(ctx context.Context, adAccountID string, operation Opera
 		return Result{}, resp, true, fmt.Errorf("read Apple Ads response: %w", err)
 	}
 	if len(data) > maxResponseBody {
-		return Result{}, resp, true, errors.New("Apple Ads response exceeds size limit")
+		return Result{}, resp, true, errors.New("response from Apple Ads exceeds size limit")
 	}
 	if len(bytes.TrimSpace(data)) == 0 && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
 		return Result{
@@ -172,7 +172,7 @@ func marshalBody(value any) ([]byte, error) {
 		return nil, fmt.Errorf("encode Apple Ads request: %w", err)
 	}
 	if len(data) > maxRequestBody {
-		return nil, errors.New("Apple Ads request exceeds size limit")
+		return nil, errors.New("request to Apple Ads exceeds size limit")
 	}
 	return data, nil
 }

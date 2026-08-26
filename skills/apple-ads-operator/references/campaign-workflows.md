@@ -35,9 +35,9 @@ Placement-incompatible targeting, Maps-only values, an unexpected storefront, a 
 2. In `learning`, read the 28-day baseline, last 7 versus prior 7 windows, daily P25-P75 CPI range, budget utilization, and Apple recommendations. Do not create an apply receipt.
 3. Ask the operator to set the business `targetInstallCPA`; never derive it automatically from Apple or historical CPI.
 4. In `active`, review `optimization_plan`, its minimum-data checks, cooldowns, caps, and reasons before preview.
-5. Preview the whole bounded plan once. Verify the action order: pauses/decreases, then strategy/bids, then budgets, then allowed resumes/increases.
+5. Confirm that all 28 completed UTC dates are present, the policy has an independent `maxBid` when bid actions are allowed, and no reconciliation lock is active. Preview the whole bounded plan once. Verify the action order: pauses/decreases, then strategy/bids, then budgets, then allowed resumes/increases.
 6. Apply the same receipt once and verify every item. A failed dependency is skipped; an ambiguous result stops all remaining actions.
-7. Review `optimization_history` before the next run.
+7. Review `optimization_history` before the next run. If any item is unknown, do not create another plan until `operations_verify` conclusively reconciles it.
 
 Do not apply Apple's recommendation solely because it exists. Show Apple's amount, the business target, the policy cap, and the final calculated amount separately. The optimizer never deletes. It can retest only an object it previously paused and only when the policy permits retest.
 

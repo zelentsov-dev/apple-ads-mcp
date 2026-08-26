@@ -206,6 +206,9 @@ func optimizationPolicyInit(args []string) error {
 		Preset: "balanced",
 	}
 	policy.MaxCampaignDailyBudget.Currency = policy.MaxTotalDailyBudget.Currency
+	if policy.Permissions.Bid {
+		policy.MaxBid = &appleads.Money{Amount: prompt(reader, "Maximum bid", "5.00"), Currency: policy.MaxTotalDailyBudget.Currency}
+	}
 	if policy.Mode == "active" {
 		policy.TargetInstallCPA = &appleads.Money{Amount: prompt(reader, "Target install CPA", ""), Currency: policy.MaxTotalDailyBudget.Currency}
 	}

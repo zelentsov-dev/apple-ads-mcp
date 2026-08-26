@@ -69,11 +69,12 @@ func (s *Service) optimizationPlanPreview(store *operations.Store) func(context.
 		if err := s.writeAllowed(ctx, input.Profile, input.AdAccountID); err != nil {
 			return failedPreview(err)
 		}
-		evidence, _, err := s.optimizationEvidence(ctx, policy)
+		now := time.Now()
+		evidence, _, err := s.optimizationEvidence(ctx, policy, now)
 		if err != nil {
 			return failedPreview(err)
 		}
-		plan, err := optimization.BuildPlan(policy, evidence, history, time.Now())
+		plan, err := optimization.BuildPlan(policy, evidence, history, now)
 		if err != nil {
 			return failedPreview(err)
 		}
@@ -96,7 +97,7 @@ func (s *Service) optimizationPlanPreview(store *operations.Store) func(context.
 			steps = append(steps, operations.SequenceStep{Item: operations.OperationItemPreview{
 				CorrelationID: action.CorrelationID, CampaignID: action.CampaignID,
 				ResourceType: action.ResourceType, Action: action.Action, TargetID: action.ResourceID,
-				Before: action.Before, After: action.After, Reason: action.Reason, DependsOn: action.DependsOn,
+				Before: optimizationExpectedBefore(action, resource), After: payload, Reason: action.Reason, DependsOn: action.DependsOn,
 			}, Mutation: mutation})
 			key := resource + "/" + action.ResourceID
 			if _, exists := seenReads[key]; !exists {
@@ -106,7 +107,7 @@ func (s *Service) optimizationPlanPreview(store *operations.Store) func(context.
 				targetIDs = append(targetIDs, action.ResourceID)
 			}
 		}
-		reportEnd := time.Now().UTC().AddDate(0, 0, -1)
+		reportEnd := now.UTC().AddDate(0, 0, -1)
 		reportStart := reportEnd.AddDate(0, 0, -27)
 		for _, campaignID := range policy.CampaignIDs {
 			campaignReport, err := optimizationCampaignReportOperation(policy, "campaigns", campaignID, reportStart, reportEnd)
@@ -134,6 +135,23 @@ func (s *Service) optimizationPlanPreview(store *operations.Store) func(context.
 		}
 		return previewSuccess(preview)
 	}
+}
+
+func optimizationExpectedBefore(action optimization.PlanAction, resource string) map[string]any {
+	switch action.Action {
+	case "budget", "budget_increase", "budget_decrease":
+		if money, ok := moneyFromAnyTool(action.Before["dailyBudget"]); ok {
+			return map[string]any{"dailyBudget": map[string]any{"value": money}}
+		}
+	case "bid_increase", "bid_decrease":
+		if money, ok := moneyFromAnyTool(action.Before["bid"]); ok {
+			if resource == "adgroups" {
+				return map[string]any{"bidStrategy": map[string]any{"bid": money}}
+			}
+			return map[string]any{"bid": money}
+		}
+	}
+	return action.Before
 }
 
 func optimizationMutation(action optimization.PlanAction) (string, map[string]any, error) {
@@ -188,7 +206,7 @@ func (s *Service) ensureMaxConversionsEligible(ctx context.Context, account Acco
 		return err
 	}
 	if !containsStringValue(campaign, "MAX_CONVERSIONS") && !containsTrueField(campaign, "maxConversionsEligible") {
-		return errors.New("Apple campaign metadata does not confirm MAX_CONVERSIONS eligibility")
+		return errors.New("campaign metadata from Apple does not confirm MAX_CONVERSIONS eligibility")
 	}
 	end := time.Now().UTC().AddDate(0, 0, -1)
 	start := end.AddDate(0, 0, -13)
@@ -259,10 +277,12 @@ func (s *Service) sharedBudgetCreatePreview(store *operations.Store) func(contex
 			"pagination": map[string]any{"offset": 0, "pageSize": MaxItems},
 		})
 		publicPayload := map[string]any{"name": input.Name, "startTime": input.StartTime, "value": input.Value, "billingProfile": input.BillingProfile, "privatePayloadHash": privateHash}
+		verificationPayload := map[string]any{"name": input.Name, "startTime": input.StartTime, "value": input.Value}
 		if input.EndTime != nil {
 			publicPayload["endTime"] = *input.EndTime
+			verificationPayload["endTime"] = *input.EndTime
 		}
-		preview, err := store.PreviewComposite(ctx, s.manager, input.Profile, input.AdAccountID, "shared_budget_create", nil, publicPayload, []operations.VerificationRead{{Name: "shared_budget_inventory", Operation: verification}}, mutation, operations.PreviewOptions{Impact: &operations.OperationImpact{SpendAffecting: true, ObjectCount: 1, Currency: input.Value.Currency, PrivateHash: privateHash}})
+		preview, err := store.PreviewComposite(ctx, s.manager, input.Profile, input.AdAccountID, "shared_budget_create", nil, publicPayload, []operations.VerificationRead{{Name: "shared_budget_inventory", Operation: verification}}, mutation, operations.PreviewOptions{Impact: &operations.OperationImpact{SpendAffecting: true, ObjectCount: 1, Currency: input.Value.Currency, PrivateHash: privateHash}, Create: &operations.CreateExpectation{Resource: "shared-budgets", Expected: verificationPayload}})
 		if err != nil {
 			return failedPreview(err)
 		}
@@ -673,7 +693,7 @@ func (s *Service) recordOptimizationApply(preview operations.OperationPreview, r
 	if preview.Impact == nil || preview.Impact.Policy == "" {
 		return nil
 	}
-	store, err := optimization.NewHistoryStore(s.historyRoot)
+	store, err := s.optimizationHistoryStore()
 	if err != nil {
 		return err
 	}
@@ -689,6 +709,7 @@ func (s *Service) recordOptimizationApply(preview operations.OperationPreview, r
 		}
 		actions = append(actions, optimization.HistoryAction{
 			CorrelationID: item.CorrelationID, CampaignID: item.CampaignID, ResourceType: item.ResourceType,
+			Resource:   optimizationResourceName(item.ResourceType),
 			ResourceID: item.TargetID, Action: item.Action, Status: item.Status, Reason: previewItem.Reason,
 			Before: historyMap(previewItem.Before), After: previewItem.After, OccurredAt: receipt.AppliedAt,
 		})
@@ -699,11 +720,36 @@ func (s *Service) recordOptimizationApply(preview operations.OperationPreview, r
 	})
 }
 
+func (s *Service) recordOptimizationIntent(preview operations.OperationPreview) error {
+	if preview.Impact == nil || preview.Impact.Policy == "" {
+		return nil
+	}
+	store, err := s.optimizationHistoryStore()
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	actions := make([]optimization.HistoryAction, 0, len(preview.Items))
+	for _, item := range preview.Items {
+		actions = append(actions, optimization.HistoryAction{
+			CorrelationID: item.CorrelationID, CampaignID: item.CampaignID, ResourceType: item.ResourceType,
+			Resource:   optimizationResourceName(item.ResourceType),
+			ResourceID: item.TargetID, Action: item.Action, Status: "pending", Reason: item.Reason,
+			Before: historyMap(item.Before), After: item.After, OccurredAt: now,
+		})
+	}
+	sum := sha256.Sum256([]byte(preview.Receipt))
+	return store.BeginIntent(preview.Impact.Policy, optimization.HistoryEntry{
+		Policy: preview.Impact.Policy, Profile: preview.Profile, AdAccountID: preview.AdAccountID,
+		CreatedAt: now, ReceiptHash: hex.EncodeToString(sum[:]), Status: "applying", Actions: actions,
+	})
+}
+
 func (s *Service) recordOptimizationPreview(preview operations.OperationPreview, baseline optimization.Baseline) error {
 	if preview.Impact == nil || preview.Impact.Policy == "" {
 		return nil
 	}
-	store, err := optimization.NewHistoryStore(s.historyRoot)
+	store, err := s.optimizationHistoryStore()
 	if err != nil {
 		return err
 	}
@@ -712,6 +758,7 @@ func (s *Service) recordOptimizationPreview(preview operations.OperationPreview,
 	for _, item := range preview.Items {
 		actions = append(actions, optimization.HistoryAction{
 			CorrelationID: item.CorrelationID, CampaignID: item.CampaignID, ResourceType: item.ResourceType,
+			Resource:   optimizationResourceName(item.ResourceType),
 			ResourceID: item.TargetID, Action: item.Action, Status: "previewed", Reason: item.Reason,
 			Before: historyMap(item.Before), After: item.After, OccurredAt: time.Now().UTC().Format(time.RFC3339),
 		})
@@ -727,27 +774,31 @@ func (s *Service) recordOptimizationVerification(ctx context.Context, preview op
 	if preview.Impact == nil || preview.Impact.Policy == "" {
 		return nil
 	}
-	store, err := optimization.NewHistoryStore(s.historyRoot)
+	store, err := s.optimizationHistoryStore()
 	if err != nil {
 		return err
 	}
 	actions := make([]optimization.HistoryAction, 0, len(preview.Items))
 	for _, item := range preview.Items {
-		status := "verified"
+		status := "unknown"
+		var current map[string]any
 		for _, object := range verification.Objects {
-			if object.Name == strings.ReplaceAll(resourceNameForAction(item.ResourceType)+"/"+item.TargetID, "/", "_") {
+			if object.Name == "item_"+item.CorrelationID {
 				status = object.Status
+				current = historyMap(object.Current)
 				break
 			}
 		}
-		actions = append(actions, optimization.HistoryAction{CorrelationID: item.CorrelationID, CampaignID: item.CampaignID, ResourceType: item.ResourceType, ResourceID: item.TargetID, Action: item.Action, Status: status, OccurredAt: time.Now().UTC().Format(time.RFC3339)})
+		actions = append(actions, optimization.HistoryAction{CorrelationID: item.CorrelationID, CampaignID: item.CampaignID, ResourceType: item.ResourceType, Resource: optimizationResourceName(item.ResourceType), ResourceID: item.TargetID, Action: item.Action, Status: status, After: current, OccurredAt: time.Now().UTC().Format(time.RFC3339)})
 	}
-	entry := optimization.HistoryEntry{Policy: preview.Impact.Policy, Profile: preview.Profile, AdAccountID: preview.AdAccountID, Status: "verification_" + verification.Status, Verification: actions}
+	sum := sha256.Sum256([]byte(preview.Receipt))
+	entry := optimization.HistoryEntry{Policy: preview.Impact.Policy, Profile: preview.Profile, AdAccountID: preview.AdAccountID, ReceiptHash: hex.EncodeToString(sum[:]), Status: "verification_" + verification.Status, Verification: actions}
 	policies, _, loadErr := optimization.LoadPolicies(s.policyPath)
 	if loadErr == nil {
 		if policy, resolveErr := policies.Resolve(preview.Impact.Policy); resolveErr == nil {
-			if evidence, _, evidenceErr := s.optimizationEvidence(ctx, policy); evidenceErr == nil {
-				if baseline, baselineErr := optimization.BuildBaseline(policy, evidence, optimization.History{}, time.Now()); baselineErr == nil {
+			now := time.Now()
+			if evidence, _, evidenceErr := s.optimizationEvidence(ctx, policy, now); evidenceErr == nil {
+				if baseline, baselineErr := optimization.BuildBaseline(policy, evidence, optimization.History{}, now); baselineErr == nil {
 					entry.PerformanceAfter = optimization.PerformanceSnapshots(baseline)
 				}
 			}
@@ -756,7 +807,65 @@ func (s *Service) recordOptimizationVerification(ctx context.Context, preview op
 	return store.Append(preview.Impact.Policy, entry)
 }
 
-func resourceNameForAction(resourceType string) string {
+func (s *Service) recoverOptimizationVerification(ctx context.Context, receipt string) (operations.OperationPreview, operations.OperationVerification, error) {
+	sum := sha256.Sum256([]byte(receipt))
+	receiptHash := hex.EncodeToString(sum[:])
+	policies, _, err := optimization.LoadPolicies(s.policyPath)
+	if err != nil {
+		return operations.OperationPreview{}, operations.OperationVerification{}, err
+	}
+	store, err := s.optimizationHistoryStore()
+	if err != nil {
+		return operations.OperationPreview{}, operations.OperationVerification{}, err
+	}
+	for _, policy := range policies.Policies {
+		history, loadErr := store.Load(policy.Name)
+		if loadErr != nil {
+			return operations.OperationPreview{}, operations.OperationVerification{}, loadErr
+		}
+		entry, exists := optimization.ReconciliationEntry(history, receiptHash)
+		if !exists {
+			continue
+		}
+		if !strings.EqualFold(entry.Policy, policy.Name) || !strings.EqualFold(entry.Profile, policy.Profile) || entry.AdAccountID != policy.AdAccountID {
+			return operations.OperationPreview{}, operations.OperationVerification{}, errors.New("persisted optimization recovery identity does not match the named policy")
+		}
+		items := make([]operations.RecoveryItem, 0, len(entry.Actions))
+		previewItems := make([]operations.OperationItemPreview, 0, len(entry.Actions))
+		for _, action := range entry.Actions {
+			resource := optimizationResourceName(action.ResourceType)
+			if resource == "" {
+				return operations.OperationPreview{}, operations.OperationVerification{}, fmt.Errorf("unsupported persisted optimization resource type %q", action.ResourceType)
+			}
+			if action.Resource != "" && action.Resource != resource {
+				return operations.OperationPreview{}, operations.OperationVerification{}, errors.New("persisted optimization recovery resource does not match its typed action")
+			}
+			items = append(items, operations.RecoveryItem{
+				CorrelationID: action.CorrelationID, CampaignID: action.CampaignID,
+				ResourceType: action.ResourceType, Resource: resource, TargetID: action.ResourceID,
+				Action: action.Action, Before: action.Before, After: action.After,
+			})
+			previewItems = append(previewItems, operations.OperationItemPreview{
+				CorrelationID: action.CorrelationID, CampaignID: action.CampaignID,
+				ResourceType: action.ResourceType, TargetID: action.ResourceID,
+				Action: action.Action, Reason: action.Reason, Before: action.Before, After: action.After,
+			})
+		}
+		verification, verifyErr := operations.VerifyRecovery(ctx, s.manager, receipt, entry.Profile, entry.AdAccountID, items)
+		if verifyErr != nil {
+			return operations.OperationPreview{}, operations.OperationVerification{}, verifyErr
+		}
+		preview := operations.OperationPreview{
+			Receipt: receipt, Profile: entry.Profile, AdAccountID: entry.AdAccountID,
+			Operation: "optimization_plan_recovery", Items: previewItems,
+			Impact: &operations.OperationImpact{Policy: entry.Policy, ObjectCount: len(previewItems)},
+		}
+		return preview, verification, nil
+	}
+	return operations.OperationPreview{}, operations.OperationVerification{}, operations.ErrReceiptNotFound
+}
+
+func optimizationResourceName(resourceType string) string {
 	return map[string]string{"campaign": "campaigns", "ad_group": "adgroups", "keyword": "keywords"}[resourceType]
 }
 

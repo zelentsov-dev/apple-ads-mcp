@@ -33,6 +33,7 @@ type Policy struct {
 	TargetInstallCPA       *appleads.Money `json:"targetInstallCPA,omitempty"`
 	MaxTotalDailyBudget    appleads.Money  `json:"maxTotalDailyBudget"`
 	MaxCampaignDailyBudget appleads.Money  `json:"maxCampaignDailyBudget"`
+	MaxBid                 *appleads.Money `json:"maxBid,omitempty"`
 	Permissions            Permissions     `json:"permissions"`
 	Preset                 string          `json:"preset"`
 	Thresholds             Thresholds      `json:"thresholds,omitempty"`
@@ -243,6 +244,17 @@ func (p Policy) Validate() error {
 	if p.MaxTotalDailyBudget.Currency != p.MaxCampaignDailyBudget.Currency {
 		return errors.New("budget cap currencies must match")
 	}
+	if p.Permissions.Bid {
+		if p.MaxBid == nil {
+			return errors.New("bid permission requires maxBid")
+		}
+		if err := p.MaxBid.ValidatePositive(); err != nil {
+			return fmt.Errorf("maxBid: %w", err)
+		}
+		if p.MaxBid.Currency != p.MaxTotalDailyBudget.Currency {
+			return errors.New("maxBid currency must match budget caps")
+		}
+	}
 	if p.TargetInstallCPA != nil {
 		if err := p.TargetInstallCPA.ValidatePositive(); err != nil {
 			return fmt.Errorf("targetInstallCPA: %w", err)
@@ -253,6 +265,10 @@ func (p Policy) Validate() error {
 	}
 	if p.Permissions.Retest && !p.Permissions.Resume {
 		return errors.New("retest permission requires resume permission")
+	}
+	resolved := resolvedThresholds(p.Thresholds)
+	if resolved.MinimumCompletedDays > 28 || resolved.MaxConversionsMinimumDays > 28 {
+		return errors.New("completed-day thresholds must not exceed the 28-day evidence window")
 	}
 	return validateTightenedThresholds(p.Thresholds)
 }

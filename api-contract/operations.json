@@ -1,7 +1,7 @@
 {
   "apiFamily": "Apple Ads Platform API",
   "apiVersion": "v1",
-  "productVersion": "0.3.0",
+  "productVersion": "0.3.1",
   "legacyV5": false,
   "appleMaps": false,
   "maximumPageSize": 200,
@@ -109,7 +109,7 @@
       "paths": ["PUT /campaigns/{id}", "PUT /adgroups/{id}", "PUT /keywords/{id}"],
       "classification": "mutation",
       "status": "composite-receipt-gated",
-      "constraints": ["maximum 20 campaigns", "maximum 100 actions", "full report and inventory drift check", "independent confirmed 4xx may continue", "ambiguous result stops remaining actions", "no rollback or retry"]
+      "constraints": ["maximum 20 campaigns", "maximum 100 actions", "full report and inventory drift check", "crash-durable sanitized recovery recipe", "restart-safe operations_verify", "independent confirmed 4xx may continue", "ambiguous result stops remaining actions", "no rollback or retry"]
     },
     {
       "area": "resource-lifecycle",

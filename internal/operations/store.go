@@ -102,6 +102,17 @@ type ObjectVerification struct {
 	Current any    `json:"current,omitempty"`
 }
 
+type RecoveryItem struct {
+	CorrelationID string         `json:"correlationId"`
+	CampaignID    string         `json:"campaignId,omitempty"`
+	ResourceType  string         `json:"resourceType"`
+	Resource      string         `json:"resource"`
+	TargetID      string         `json:"targetId"`
+	Action        string         `json:"action"`
+	Before        map[string]any `json:"before,omitempty"`
+	After         map[string]any `json:"after"`
+}
+
 type VerificationRead struct {
 	Name          string
 	Operation     appleads.Operation
@@ -111,6 +122,12 @@ type VerificationRead struct {
 type PreviewOptions struct {
 	Impact *OperationImpact
 	Items  []OperationItemPreview
+	Create *CreateExpectation
+}
+
+type CreateExpectation struct {
+	Resource string
+	Expected map[string]any
 }
 
 type SequenceStep struct {
@@ -123,6 +140,8 @@ type record struct {
 	verify   []VerificationRead
 	mutation appleads.Operation
 	sequence []SequenceStep
+	create   *CreateExpectation
+	outcomes map[string]string
 	used     bool
 	size     int
 }
@@ -139,6 +158,8 @@ const (
 	maxStoredReceipts    = 1000
 	maxStoredReceiptData = 32 << 20
 )
+
+var ErrReceiptNotFound = errors.New("receipt not found")
 
 func NewStore() *Store {
 	return &Store{records: make(map[string]*record), now: time.Now, ttl: 10 * time.Minute}
@@ -210,7 +231,7 @@ func (s *Store) PreviewComposite(ctx context.Context, executor Executor, profile
 		s.mu.Unlock()
 		return OperationPreview{}, errors.New("receipt capacity reached; wait for existing previews to expire")
 	}
-	s.records[receipt] = &record{preview: preview, verify: append([]VerificationRead(nil), verify...), mutation: mutation, size: recordSize}
+	s.records[receipt] = &record{preview: preview, verify: append([]VerificationRead(nil), verify...), mutation: mutation, create: cloneCreateExpectation(options.Create), size: recordSize}
 	s.total += recordSize
 	s.mu.Unlock()
 	return preview, nil
@@ -296,11 +317,15 @@ func (s *Store) pruneExpiredLocked() {
 }
 
 func (s *Store) Apply(ctx context.Context, executor Executor, receipt string) (OperationReceipt, error) {
+	return s.ApplyWithPreflight(ctx, executor, receipt, nil)
+}
+
+func (s *Store) ApplyWithPreflight(ctx context.Context, executor Executor, receipt string, preflight func(OperationPreview) error) (OperationReceipt, error) {
 	s.mu.Lock()
 	record, ok := s.records[receipt]
 	if !ok {
 		s.mu.Unlock()
-		return OperationReceipt{}, errors.New("receipt not found")
+		return OperationReceipt{}, ErrReceiptNotFound
 	}
 	if record.used {
 		s.mu.Unlock()
@@ -345,9 +370,16 @@ func (s *Store) Apply(ctx context.Context, executor Executor, receipt string) (O
 	}
 	record.used = true
 	s.mu.Unlock()
+	if preflight != nil {
+		if err := preflight(preview); err != nil {
+			return OperationReceipt{}, fmt.Errorf("persist write intent: %w", err)
+		}
+	}
 
 	if len(sequence) > 0 {
-		return s.applySequence(ctx, executor, receipt, preview, sequence), nil
+		result := s.applySequence(ctx, executor, receipt, preview, sequence)
+		s.storeOutcomes(record, result.Items)
+		return result, nil
 	}
 	result, err := executor.Do(ctx, preview.Profile, preview.AdAccountID, mutation)
 	receiptResult := OperationReceipt{
@@ -363,11 +395,13 @@ func (s *Store) Apply(ctx context.Context, executor Executor, receipt string) (O
 			receiptResult.Status = "unknown"
 			receiptResult.Verification = "committed_unverified"
 			receiptResult.Items = unknownItemStatuses(preview.Items)
+			s.storeOutcomes(record, receiptResult.Items)
 			return receiptResult, nil
 		}
 		return OperationReceipt{}, err
 	}
 	receiptResult.Items = resultItemStatuses(result.Data, preview.Items)
+	s.storeOutcomes(record, receiptResult.Items)
 	if len(receiptResult.Items) > 0 {
 		s.mu.Lock()
 		targetIDs := make([]string, 0, len(receiptResult.Items))
@@ -386,6 +420,11 @@ func (s *Store) Apply(ctx context.Context, executor Executor, receipt string) (O
 		if createdID := findFirstResultID(result.Data); createdID != "" {
 			s.mu.Lock()
 			record.preview.TargetIDs = []string{createdID}
+			if record.create != nil {
+				if read, readErr := appleads.ResourceGet(record.create.Resource, createdID); readErr == nil {
+					record.verify = append(record.verify, VerificationRead{Name: "created_target", Operation: read})
+				}
+			}
 			s.mu.Unlock()
 		}
 	}
@@ -483,7 +522,7 @@ func (s *Store) Inspect(receipt string) (OperationPreview, bool, error) {
 	defer s.mu.Unlock()
 	record, ok := s.records[receipt]
 	if !ok {
-		return OperationPreview{}, false, errors.New("receipt not found")
+		return OperationPreview{}, false, ErrReceiptNotFound
 	}
 	return record.preview, record.used, nil
 }
@@ -493,10 +532,12 @@ func (s *Store) Verify(ctx context.Context, executor Executor, receipt string) (
 	record, ok := s.records[receipt]
 	if !ok {
 		s.mu.Unlock()
-		return OperationVerification{}, errors.New("receipt not found")
+		return OperationVerification{}, ErrReceiptNotFound
 	}
 	preview := record.preview
 	verify := record.verify
+	create := cloneCreateExpectation(record.create)
+	outcomes := cloneStringMap(record.outcomes)
 	used := record.used
 	s.mu.Unlock()
 	current, objects, err := readVerificationState(ctx, executor, preview.Profile, preview.AdAccountID, verify)
@@ -517,7 +558,49 @@ func (s *Store) Verify(ctx context.Context, executor Executor, receipt string) (
 	for index := range objects {
 		objects[index].Current = redactPrivateData(objects[index].Current)
 	}
+	if create != nil {
+		createdID := ""
+		if len(preview.TargetIDs) == 1 {
+			createdID = preview.TargetIDs[0]
+		}
+		var created any
+		for _, object := range objects {
+			if object.Name == "created_target" {
+				created = object.Current
+				break
+			}
+		}
+		if created == nil && createdID != "" {
+			read, readErr := appleads.ResourceGet(create.Resource, createdID)
+			if readErr == nil {
+				result, resultErr := executor.Do(ctx, preview.Profile, preview.AdAccountID, read)
+				if resultErr == nil {
+					created = result.Data
+					s.mu.Lock()
+					record.preview.TargetIDs = []string{createdID}
+					record.verify = appendVerificationRead(record.verify, VerificationRead{Name: "created_target", Operation: read})
+					s.mu.Unlock()
+				}
+			}
+		}
+		createdStatus := "inconclusive"
+		if created != nil {
+			createdStatus = "mismatch"
+			if matchesExpectedSubset(created, create.Expected) {
+				createdStatus = "matched"
+			}
+		}
+		objects = appendOrReplaceObject(objects, ObjectVerification{Name: "created_target", Status: createdStatus, Current: redactPrivateData(created)})
+		if createdStatus == "matched" {
+			status = "verified"
+		} else {
+			status = "inconclusive"
+		}
+	}
 	for index := range objects {
+		if create != nil && objects[index].Name == "created_target" {
+			continue
+		}
 		if current, ok := objects[index].Current.(map[string]any); ok {
 			if deleted, ok := current["deleted"].(bool); ok && deleted {
 				objects[index].Status = "deleted"
@@ -544,14 +627,45 @@ func (s *Store) Verify(ctx context.Context, executor Executor, receipt string) (
 	}
 	for _, item := range preview.Items {
 		itemStatus := "unknown"
+		currentItem := findResultObject(current, item.TargetID)
 		if item.TargetID != "" {
-			if containsResultID(current, item.TargetID) {
-				itemStatus = "present"
+			if currentItem != nil {
+				switch outcomes[item.CorrelationID] {
+				case "failed", "skipped", "not_attempted":
+					if matchesExpectedSubset(currentItem, objectMap(item.Before)) {
+						itemStatus = "matched_before"
+					} else {
+						itemStatus = "mismatch"
+					}
+				case "unknown":
+					if matchesExpectedSubset(currentItem, item.After) {
+						itemStatus = "matched_after"
+					} else if matchesExpectedSubset(currentItem, objectMap(item.Before)) {
+						itemStatus = "matched_before"
+					} else {
+						itemStatus = "mismatch"
+					}
+				default:
+					if matchesExpectedSubset(currentItem, item.After) {
+						itemStatus = "matched"
+					} else {
+						itemStatus = "mismatch"
+					}
+				}
 			} else {
 				itemStatus = "missing"
 			}
 		}
-		objects = append(objects, ObjectVerification{Name: "item_" + item.CorrelationID, Status: itemStatus, Current: findResultObject(current, item.TargetID)})
+		objects = append(objects, ObjectVerification{Name: "item_" + item.CorrelationID, Status: itemStatus, Current: currentItem})
+	}
+	if len(preview.Items) > 0 {
+		status = "verified"
+		for _, object := range objects {
+			if strings.HasPrefix(object.Name, "item_") && !strings.HasPrefix(object.Status, "matched") {
+				status = "inconclusive"
+				break
+			}
+		}
 	}
 	current = redactPrivateData(current)
 	return OperationVerification{
@@ -559,6 +673,153 @@ func (s *Store) Verify(ctx context.Context, executor Executor, receipt string) (
 		CurrentHash: hash, PreviewHash: preview.CurrentHash, ExpectedDiff: preview.Diff,
 		Objects: objects,
 	}, nil
+}
+
+func VerifyRecovery(ctx context.Context, executor Executor, receipt, profile, adAccountID string, items []RecoveryItem) (OperationVerification, error) {
+	if strings.TrimSpace(receipt) == "" || strings.TrimSpace(profile) == "" || strings.TrimSpace(adAccountID) == "" {
+		return OperationVerification{}, errors.New("recovery receipt, profile, and adAccountId are required")
+	}
+	if len(items) == 0 || len(items) > 100 {
+		return OperationVerification{}, errors.New("recovery requires 1 to 100 sanitized items")
+	}
+	current := make(map[string]any, len(items))
+	objects := make([]ObjectVerification, 0, len(items))
+	expected := make([]any, 0, len(items))
+	status := "verified"
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.CorrelationID) == "" || strings.TrimSpace(item.Resource) == "" || strings.TrimSpace(item.TargetID) == "" {
+			return OperationVerification{}, errors.New("recovery item correlationId, resource, and targetId are required")
+		}
+		if _, exists := seen[item.CorrelationID]; exists {
+			return OperationVerification{}, fmt.Errorf("duplicate recovery correlationId %q", item.CorrelationID)
+		}
+		seen[item.CorrelationID] = struct{}{}
+		read, err := appleads.ResourceGet(item.Resource, item.TargetID)
+		if err != nil {
+			return OperationVerification{}, fmt.Errorf("build recovery read for %s: %w", item.CorrelationID, err)
+		}
+		result, err := executor.Do(ctx, profile, adAccountID, read)
+		if err != nil {
+			return OperationVerification{}, fmt.Errorf("read recovery target %s: %w", item.CorrelationID, err)
+		}
+		itemStatus := "mismatch"
+		if matchesExpectedSubset(result.Data, item.After) {
+			itemStatus = "matched_after"
+		} else if matchesExpectedSubset(result.Data, item.Before) {
+			itemStatus = "matched_before"
+		} else {
+			status = "inconclusive"
+		}
+		current[item.CorrelationID] = result.Data
+		objects = append(objects, ObjectVerification{Name: "item_" + item.CorrelationID, Status: itemStatus, Current: redactPrivateData(result.Data)})
+		expected = append(expected, map[string]any{
+			"correlationId": item.CorrelationID, "campaignId": item.CampaignID,
+			"resourceType": item.ResourceType, "resource": item.Resource,
+			"targetId": item.TargetID, "action": item.Action,
+			"before": item.Before, "after": item.After,
+		})
+	}
+	currentHash, err := valueHash(current)
+	if err != nil {
+		return OperationVerification{}, err
+	}
+	previewHash, err := valueHash(expected)
+	if err != nil {
+		return OperationVerification{}, err
+	}
+	return OperationVerification{
+		Receipt: receipt, Status: status, Used: true, Current: redactPrivateData(current),
+		CurrentHash: currentHash, PreviewHash: previewHash,
+		ExpectedDiff: redactPrivateData(map[string]any{"recovery": expected}), Objects: objects,
+	}, nil
+}
+
+func (s *Store) storeOutcomes(record *record, items []OperationItemStatus) {
+	if len(items) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if record.outcomes == nil {
+		record.outcomes = make(map[string]string, len(items))
+	}
+	for _, item := range items {
+		record.outcomes[item.CorrelationID] = item.Status
+	}
+}
+
+func cloneStringMap(value map[string]string) map[string]string {
+	if value == nil {
+		return nil
+	}
+	result := make(map[string]string, len(value))
+	for key, item := range value {
+		result[key] = item
+	}
+	return result
+}
+
+func objectMap(value any) map[string]any {
+	if result, ok := value.(map[string]any); ok {
+		return result
+	}
+	return nil
+}
+
+func cloneCreateExpectation(value *CreateExpectation) *CreateExpectation {
+	if value == nil {
+		return nil
+	}
+	return &CreateExpectation{Resource: value.Resource, Expected: cloneMap(value.Expected)}
+}
+
+func appendVerificationRead(values []VerificationRead, value VerificationRead) []VerificationRead {
+	for _, existing := range values {
+		if existing.Name == value.Name {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func appendOrReplaceObject(values []ObjectVerification, value ObjectVerification) []ObjectVerification {
+	for index := range values {
+		if values[index].Name == value.Name {
+			values[index] = value
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func matchesExpectedSubset(current any, expected map[string]any) bool {
+	if len(expected) == 0 {
+		return false
+	}
+	currentMap, ok := current.(map[string]any)
+	if !ok {
+		return false
+	}
+	for key, expectedValue := range expected {
+		currentValue, exists := currentMap[key]
+		if !exists {
+			return false
+		}
+		expectedMap, nested := expectedValue.(map[string]any)
+		if nested {
+			if !matchesExpectedSubset(currentValue, expectedMap) {
+				return false
+			}
+			continue
+		}
+		expectedHash, expectedErr := valueHash(expectedValue)
+		currentHash, currentErr := valueHash(currentValue)
+		if expectedErr != nil || currentErr != nil || expectedHash != currentHash {
+			return false
+		}
+	}
+	return true
 }
 
 func readVerificationState(ctx context.Context, executor Executor, profile, adAccountID string, reads []VerificationRead) (any, []ObjectVerification, error) {
@@ -686,10 +947,6 @@ func findFirstResultID(value any) string {
 		}
 	}
 	return ""
-}
-
-func containsResultID(value any, expected string) bool {
-	return findResultObject(value, expected) != nil
 }
 
 func findResultObject(value any, expected string) any {

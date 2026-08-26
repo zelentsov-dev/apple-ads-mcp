@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,22 +34,24 @@ func (s *Service) registerOptimizationReadTools(server *mcp.Server) {
 		return policy, "Optimization policy loaded with resolved balanced thresholds", nil
 	}))
 	addReadTool(server, spec("optimization_baseline"), s.optimizationPolicyHandler(func(ctx context.Context, policy optimization.Policy, history optimization.History) (any, string, error) {
-		evidence, warnings, err := s.optimizationEvidence(ctx, policy)
+		now := time.Now()
+		evidence, warnings, err := s.optimizationEvidence(ctx, policy, now)
 		if err != nil {
 			return nil, "", err
 		}
-		baseline, err := optimization.BuildBaseline(policy, evidence, history, time.Now())
+		baseline, err := optimization.BuildBaseline(policy, evidence, history, now)
 		if err != nil {
 			return nil, "", err
 		}
 		return map[string]any{"baseline": baseline, "warnings": warnings}, "Apple Ads optimization baseline built from completed days", nil
 	}))
 	addReadTool(server, spec("optimization_plan"), s.optimizationPolicyHandler(func(ctx context.Context, policy optimization.Policy, history optimization.History) (any, string, error) {
-		evidence, warnings, err := s.optimizationEvidence(ctx, policy)
+		now := time.Now()
+		evidence, warnings, err := s.optimizationEvidence(ctx, policy, now)
 		if err != nil {
 			return nil, "", err
 		}
-		plan, err := optimization.BuildPlan(policy, evidence, history, time.Now())
+		plan, err := optimization.BuildPlan(policy, evidence, history, now)
 		if err != nil {
 			return nil, "", err
 		}
@@ -93,7 +97,7 @@ func (s *Service) resolveOptimizationPolicy(input OptimizationPolicyInput) (opti
 	if !strings.EqualFold(policy.Profile, input.Profile) || policy.AdAccountID != input.AdAccountID {
 		return optimization.Policy{}, optimization.History{}, errors.New("explicit profile and adAccountId do not match the named optimization policy")
 	}
-	store, err := optimization.NewHistoryStore(s.historyRoot)
+	store, err := s.optimizationHistoryStore()
 	if err != nil {
 		return optimization.Policy{}, optimization.History{}, err
 	}
@@ -104,10 +108,10 @@ func (s *Service) resolveOptimizationPolicy(input OptimizationPolicyInput) (opti
 	return policy, history, nil
 }
 
-func (s *Service) optimizationEvidence(ctx context.Context, policy optimization.Policy) ([]optimization.CampaignEvidence, []string, error) {
+func (s *Service) optimizationEvidence(ctx context.Context, policy optimization.Policy, now time.Time) ([]optimization.CampaignEvidence, []string, error) {
 	evidence := make([]optimization.CampaignEvidence, 0, len(policy.CampaignIDs))
 	warnings := make([]string, 0)
-	end := time.Now().UTC().AddDate(0, 0, -1)
+	end := now.UTC().AddDate(0, 0, -1)
 	start := end.AddDate(0, 0, -27)
 	for _, campaignID := range policy.CampaignIDs {
 		campaignOperation, err := appleads.ResourceGet("campaigns", campaignID)
@@ -126,13 +130,13 @@ func (s *Service) optimizationEvidence(ctx context.Context, policy optimization.
 		if err != nil {
 			return nil, nil, fmt.Errorf("read campaign report %s: %w", campaignID, err)
 		}
-		adGroups, adGroupWarning := s.optimizationBiddables(ctx, policy, "adgroups", campaignID, start, end)
-		if adGroupWarning != "" {
-			warnings = append(warnings, adGroupWarning)
+		adGroups, err := s.optimizationBiddables(ctx, policy, "adgroups", campaignID, start, end)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read ad-group report %s: %w", campaignID, err)
 		}
-		keywords, keywordWarning := s.optimizationBiddables(ctx, policy, "keywords", campaignID, start, end)
-		if keywordWarning != "" {
-			warnings = append(warnings, keywordWarning)
+		keywords, err := s.optimizationBiddables(ctx, policy, "keywords", campaignID, start, end)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read keyword report %s: %w", campaignID, err)
 		}
 		campaign.Biddables = append(adGroups, keywords...)
 		for _, item := range adGroups {
@@ -150,67 +154,75 @@ func (s *Service) optimizationEvidence(ctx context.Context, policy optimization.
 }
 
 func (s *Service) optimizationReport(ctx context.Context, policy optimization.Policy, kind, resourceID string, start, end time.Time) ([]optimization.DailyMetric, error) {
-	operation, err := optimizationCampaignReportOperation(policy, kind, resourceID, start, end)
+	rows, err := s.optimizationReportRows(ctx, policy, func(offset int) (appleads.Operation, error) {
+		return optimizationCampaignReportOperationAtOffset(policy, kind, resourceID, start, end, offset)
+	})
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.manager.Do(ctx, policy.Profile, policy.AdAccountID, operation)
-	if err != nil {
-		return nil, err
-	}
-	return dailyMetrics(result.Data, policy.MaxTotalDailyBudget.Currency), nil
+	return dailyMetrics(rows, resourceID, policy.MaxTotalDailyBudget.Currency)
 }
 
 func optimizationCampaignReportOperation(policy optimization.Policy, kind, resourceID string, start, end time.Time) (appleads.Operation, error) {
+	return optimizationCampaignReportOperationAtOffset(policy, kind, resourceID, start, end, 0)
+}
+
+func optimizationCampaignReportOperationAtOffset(policy optimization.Policy, kind, resourceID string, start, end time.Time, offset int) (appleads.Operation, error) {
+	request, err := optimizationCampaignReportRequest(policy, kind, resourceID, start, end, offset)
+	if err != nil {
+		return appleads.Operation{}, err
+	}
+	return appleads.Report(kind, request)
+}
+
+func optimizationCampaignReportRequest(policy optimization.Policy, kind, resourceID string, start, end time.Time, offset int) (map[string]any, error) {
 	request, err := (QueryInput{
 		AccountInput: AccountInput{Profile: policy.Profile, AdAccountID: policy.AdAccountID},
 		Filters:      []QueryFilterInput{{Field: "id", Operator: "EQUALS", Value: resourceID}},
 		Fields:       []string{"localSpend", "impressions", "taps", "tapInstalls"},
 		TimeRange:    &TimeRangeInput{Start: start.Format("2006-01-02"), End: end.Format("2006-01-02"), Granularity: "DAILY", TimeZone: "UTC"},
-		Pagination:   &PaginationInput{Offset: 0, PageSize: MaxItems},
+		Pagination:   &PaginationInput{Offset: offset, PageSize: MaxItems},
+		Options:      &QueryOptionsInput{IncludeRows: []string{"EMPTY_METRICS"}},
 	}).reportRequest(kind)
-	if err != nil {
-		return appleads.Operation{}, err
-	}
-	operation, err := appleads.Report(kind, request)
-	return operation, err
+	return request, err
 }
 
-func (s *Service) optimizationBiddables(ctx context.Context, policy optimization.Policy, kind, campaignID string, start, end time.Time) ([]optimization.BiddableEvidence, string) {
-	operation, err := optimizationBiddableReportOperation(policy, kind, campaignID, start, end)
+func (s *Service) optimizationBiddables(ctx context.Context, policy optimization.Policy, kind, campaignID string, start, end time.Time) ([]optimization.BiddableEvidence, error) {
+	rows, err := s.optimizationReportRows(ctx, policy, func(offset int) (appleads.Operation, error) {
+		return optimizationBiddableReportOperationAtOffset(policy, kind, campaignID, start, end, offset)
+	})
 	if err != nil {
-		return nil, kind + " report validation failed: " + err.Error()
-	}
-	result, err := s.manager.Do(ctx, policy.Profile, policy.AdAccountID, operation)
-	if err != nil {
-		return nil, kind + " report unavailable: " + publicErrorMessage(err)
+		return nil, err
 	}
 	resourceType := strings.TrimSuffix(kind, "s")
 	if kind == "adgroups" {
 		resourceType = "ad_group"
 	}
-	return biddableRows(result.Data, resourceType, policy.MaxTotalDailyBudget.Currency), ""
+	return biddableRows(rows, resourceType, policy.MaxTotalDailyBudget.Currency)
 }
 
 func optimizationBiddableReportOperation(policy optimization.Policy, kind, campaignID string, start, end time.Time) (appleads.Operation, error) {
-	fields := []string{"id", "campaignId", "status", "localSpend", "impressions", "taps", "tapInstalls"}
-	if kind == "adgroups" {
-		fields = append(fields, "name", "bidStrategy", "automatedKeywordsOptIn")
-	} else {
-		fields = append(fields, "text", "bid")
-	}
-	request, err := (QueryInput{
-		AccountInput: AccountInput{Profile: policy.Profile, AdAccountID: policy.AdAccountID},
-		Filters:      []QueryFilterInput{{Field: "campaignId", Operator: "EQUALS", Value: campaignID}},
-		Fields:       fields,
-		TimeRange:    &TimeRangeInput{Start: start.Format("2006-01-02"), End: end.Format("2006-01-02"), Granularity: "DAILY", TimeZone: "UTC"},
-		Pagination:   &PaginationInput{Offset: 0, PageSize: MaxItems},
-	}).reportRequest(kind)
+	return optimizationBiddableReportOperationAtOffset(policy, kind, campaignID, start, end, 0)
+}
+
+func optimizationBiddableReportOperationAtOffset(policy optimization.Policy, kind, campaignID string, start, end time.Time, offset int) (appleads.Operation, error) {
+	request, err := optimizationBiddableReportRequest(policy, kind, campaignID, start, end, offset)
 	if err != nil {
 		return appleads.Operation{}, err
 	}
-	operation, err := appleads.Report(kind, request)
-	return operation, err
+	return appleads.Report(kind, request)
+}
+
+func optimizationBiddableReportRequest(policy optimization.Policy, kind, campaignID string, start, end time.Time, offset int) (map[string]any, error) {
+	request, err := (QueryInput{
+		AccountInput: AccountInput{Profile: policy.Profile, AdAccountID: policy.AdAccountID},
+		Filters:      []QueryFilterInput{{Field: "campaignId", Operator: "EQUALS", Value: campaignID}},
+		Fields:       []string{"localSpend", "impressions", "taps", "tapInstalls"},
+		TimeRange:    &TimeRangeInput{Start: start.Format("2006-01-02"), End: end.Format("2006-01-02"), Granularity: "DAILY", TimeZone: "UTC"},
+		Pagination:   &PaginationInput{Offset: offset, PageSize: MaxItems},
+		Options:      &QueryOptionsInput{IncludeRows: []string{"EMPTY_METRICS"}},
+	}).reportRequest(kind)
+	return request, err
 }
 
 func (s *Service) attachOptimizationRecommendations(ctx context.Context, policy optimization.Policy, evidence []optimization.CampaignEvidence) error {
@@ -262,94 +274,269 @@ func campaignEvidenceFromObject(campaignID string, value any) optimization.Campa
 		BidStrategy:            strings.ToUpper(firstNonEmptyTool(findStringField(strategy, "bidStrategyType"), findStringField(value, "bidStrategyType"))),
 		DailyBudget:            appleads.Money{Amount: findStringField(budget, "amount"), Currency: strings.ToUpper(findStringField(budget, "currency"))},
 		MaxConversionsEligible: containsStringValue(value, "MAX_CONVERSIONS") || containsTrueField(value, "maxConversionsEligible"),
+		ModificationTime:       findStringField(value, "modificationTime"),
 	}
 }
 
-func dailyMetrics(value any, currency string) []optimization.DailyMetric {
-	rows := mapsWithField(value, "date")
-	result := make([]optimization.DailyMetric, 0, len(rows))
-	for _, row := range rows {
-		date := findStringField(row, "date")
-		if date == "" {
+const maxOptimizationReportRows = 1000
+
+func (s *Service) optimizationReportRows(ctx context.Context, policy optimization.Policy, operation func(int) (appleads.Operation, error)) ([]map[string]any, error) {
+	return collectOptimizationReportRows(func(offset int) (appleads.Result, error) {
+		op, err := operation(offset)
+		if err != nil {
+			return appleads.Result{}, err
+		}
+		return s.manager.Do(ctx, policy.Profile, policy.AdAccountID, op)
+	})
+}
+
+func collectOptimizationReportRows(fetch func(int) (appleads.Result, error)) ([]map[string]any, error) {
+	rows := make([]map[string]any, 0)
+	offset := 0
+	for {
+		result, err := fetch(offset)
+		if err != nil {
+			return nil, err
+		}
+		page, err := reportRows(result.Data)
+		if err != nil {
+			return nil, err
+		}
+		if result.Pagination.Total > maxOptimizationReportRows || len(rows)+len(page) > maxOptimizationReportRows {
+			return nil, fmt.Errorf("optimization report exceeds the %d-row safety limit", maxOptimizationReportRows)
+		}
+		rows = append(rows, page...)
+		if result.Pagination.Next == "" {
+			if result.Pagination.Total > 0 && len(rows) != result.Pagination.Total {
+				return nil, fmt.Errorf("optimization report pagination ended after %d of %d rows", len(rows), result.Pagination.Total)
+			}
+			break
+		}
+		step := result.Pagination.PageSize
+		if step <= 0 {
+			step = len(page)
+		}
+		next := result.Pagination.Offset + step
+		if next <= offset || len(page) == 0 {
+			return nil, errors.New("optimization report pagination did not advance")
+		}
+		offset = next
+	}
+	return rows, nil
+}
+
+func reportRows(value any) ([]map[string]any, error) {
+	switch typed := value.(type) {
+	case []any:
+		rows := make([]map[string]any, 0, len(typed))
+		for index, value := range typed {
+			row, ok := value.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("report row %d must be an object", index+1)
+			}
+			rows = append(rows, row)
+		}
+		return rows, nil
+	case map[string]any:
+		if len(typed) == 0 {
+			return nil, nil
+		}
+		for _, field := range []string{"rows", "result", "data"} {
+			if nested, exists := typed[field]; exists {
+				return reportRows(nested)
+			}
+		}
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		return nil, fmt.Errorf("report result must contain rows; received fields: %s", strings.Join(keys, ", "))
+	case nil:
+		return nil, nil
+	default:
+		return nil, errors.New("report result must be an array")
+	}
+}
+
+func dailyMetrics(rows []map[string]any, expectedID, currency string) ([]optimization.DailyMetric, error) {
+	result := make([]optimization.DailyMetric, 0, 28)
+	found := false
+	for index, row := range rows {
+		metadata, ok := row["metadata"].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("campaign report row %d is missing metadata", index+1)
+		}
+		if directString(metadata, "id") != expectedID {
 			continue
 		}
-		spend := moneyInField(row, "localSpend", currency)
-		result = append(result, optimization.DailyMetric{
-			Date: appleads.Date(date), Spend: spend, Taps: optimization.ParseInt(row["taps"]),
-			Impressions: optimization.ParseInt(row["impressions"]), TapInstalls: optimization.ParseInt(row["tapInstalls"]),
-		})
+		found = true
+		metrics, err := granularDailyMetrics(row, currency)
+		if err != nil {
+			return nil, fmt.Errorf("campaign report row %d: %w", index+1, err)
+		}
+		result = append(result, metrics...)
 	}
-	return result
+	if !found {
+		return nil, fmt.Errorf("campaign report did not return metadata.id %s", expectedID)
+	}
+	return result, nil
 }
 
-func biddableRows(value any, resourceType, currency string) []optimization.BiddableEvidence {
-	rows := mapsWithField(value, "id")
-	byID := map[string]*optimization.BiddableEvidence{}
-	for _, row := range rows {
-		id := findStringField(row, "id")
-		date := findStringField(row, "date")
-		if id == "" || date == "" {
+func biddableRows(rows []map[string]any, resourceType, currency string) ([]optimization.BiddableEvidence, error) {
+	result := make([]optimization.BiddableEvidence, 0, len(rows))
+	seen := make(map[string]struct{}, len(rows))
+	for index, row := range rows {
+		metadata, ok := row["metadata"].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("biddable report row %d is missing metadata", index+1)
+		}
+		id := directString(metadata, "id")
+		if id == "" {
+			return nil, fmt.Errorf("biddable report row %d is missing metadata.id", index+1)
+		}
+		if _, exists := seen[id]; exists {
+			return nil, fmt.Errorf("biddable report contains duplicate metadata.id %s", id)
+		}
+		seen[id] = struct{}{}
+		item := optimization.BiddableEvidence{
+			ResourceType: resourceType, ResourceID: id,
+			Name:   firstNonEmptyTool(directString(metadata, "name"), directString(metadata, "text")),
+			Status: strings.ToUpper(directString(metadata, "status")),
+		}
+		if value, exists := metadata["automatedKeywordsOptIn"]; exists {
+			searchMatch, ok := value.(bool)
+			if !ok {
+				return nil, fmt.Errorf("biddable %s automatedKeywordsOptIn must be boolean", id)
+			}
+			item.SearchMatch = searchMatch
+		}
+		bidValue, hasBid := metadata["bid"]
+		if !hasBid {
+			if strategy, ok := metadata["bidStrategy"].(map[string]any); ok {
+				bidValue, hasBid = strategy["bid"]
+			}
+		}
+		if hasBid && bidValue != nil {
+			bid, err := parseMoney(bidValue, currency, false)
+			if err != nil {
+				return nil, fmt.Errorf("biddable %s bid: %w", id, err)
+			}
+			if err := bid.ValidatePositive(); err != nil {
+				return nil, fmt.Errorf("biddable %s bid: %w", id, err)
+			}
+			item.Bid = &bid
+		}
+		metrics, err := granularDailyMetrics(row, currency)
+		if err != nil {
+			return nil, fmt.Errorf("biddable %s: %w", id, err)
+		}
+		item.Daily = metrics
+		result = append(result, item)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ResourceID < result[j].ResourceID })
+	return result, nil
+}
+
+func granularDailyMetrics(row map[string]any, currency string) ([]optimization.DailyMetric, error) {
+	values, ok := row["granularMetrics"].([]any)
+	if !ok {
+		return nil, errors.New("granularMetrics must be an array")
+	}
+	result := make([]optimization.DailyMetric, 0, len(values))
+	for index, value := range values {
+		metric, ok := value.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("granular metric %d must be an object", index+1)
+		}
+		date := directString(metric, "date")
+		if _, err := time.Parse("2006-01-02", date); err != nil {
+			return nil, fmt.Errorf("granular metric %d has invalid date", index+1)
+		}
+		requestedFields := []string{"localSpend", "taps", "impressions", "tapInstalls"}
+		present := 0
+		missing := make([]string, 0, len(requestedFields))
+		for _, field := range requestedFields {
+			value, exists := metric[field]
+			if exists && value != nil && strings.TrimSpace(fmt.Sprint(value)) != "" && fmt.Sprint(value) != "<nil>" {
+				present++
+				continue
+			}
+			missing = append(missing, field)
+		}
+		if present == 0 {
+			result = append(result, optimization.DailyMetric{Date: appleads.Date(date), Spend: appleads.Money{Amount: "0", Currency: currency}})
 			continue
 		}
-		item := byID[id]
-		if item == nil {
-			item = &optimization.BiddableEvidence{ResourceType: resourceType, ResourceID: id, Name: firstNonEmptyTool(findStringField(row, "name"), findStringField(row, "text")), Status: strings.ToUpper(findStringField(row, "status"))}
-			item.SearchMatch, _ = row["automatedKeywordsOptIn"].(bool)
-			if _, exists := row["bid"]; exists {
-				bid := moneyInField(row, "bid", currency)
-				item.Bid = &bid
-			} else if strategy := findMapField(row, "bidStrategy"); strategy != nil {
-				if _, exists := strategy["bid"]; exists {
-					bid := moneyInField(strategy, "bid", currency)
-					item.Bid = &bid
-				}
-			}
-			byID[id] = item
+		if present != len(requestedFields) {
+			return nil, fmt.Errorf("granular metric %d is partially empty; missing %s", index+1, strings.Join(missing, ", "))
 		}
-		item.Daily = append(item.Daily, optimization.DailyMetric{Date: appleads.Date(date), Spend: moneyInField(row, "localSpend", currency), Taps: optimization.ParseInt(row["taps"]), Impressions: optimization.ParseInt(row["impressions"]), TapInstalls: optimization.ParseInt(row["tapInstalls"])})
+		spend, err := parseMoney(metric["localSpend"], currency, false)
+		if err != nil {
+			return nil, fmt.Errorf("granular metric %d localSpend: %w", index+1, err)
+		}
+		taps, err := optimization.ParseCount(metric["taps"], "taps")
+		if err != nil {
+			return nil, err
+		}
+		impressions, err := optimization.ParseCount(metric["impressions"], "impressions")
+		if err != nil {
+			return nil, err
+		}
+		installs, err := optimization.ParseCount(metric["tapInstalls"], "tapInstalls")
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, optimization.DailyMetric{Date: appleads.Date(date), Spend: spend, Taps: taps, Impressions: impressions, TapInstalls: installs})
 	}
-	result := make([]optimization.BiddableEvidence, 0, len(byID))
-	for _, item := range byID {
-		result = append(result, *item)
-	}
-	return result
+	return result, nil
 }
 
-func mapsWithField(value any, field string) []map[string]any {
-	result := make([]map[string]any, 0)
-	var walk func(any)
-	walk = func(current any) {
-		switch typed := current.(type) {
-		case map[string]any:
-			if _, exists := typed[field]; exists {
-				result = append(result, typed)
-			}
-			for _, child := range typed {
-				walk(child)
-			}
-		case []any:
-			for _, child := range typed {
-				walk(child)
-			}
+func parseMoney(value any, fallbackCurrency string, missingIsZero bool) (appleads.Money, error) {
+	if value == nil {
+		if missingIsZero {
+			return appleads.Money{Amount: "0", Currency: fallbackCurrency}, nil
 		}
+		return appleads.Money{}, errors.New("money value is missing")
 	}
-	walk(value)
-	return result
+	if wrapper, ok := value.(map[string]any); ok {
+		if nested, ok := wrapper["value"].(map[string]any); ok {
+			wrapper = nested
+		}
+		money := appleads.Money{Amount: directString(wrapper, "amount"), Currency: strings.ToUpper(firstNonEmptyTool(directString(wrapper, "currency"), fallbackCurrency))}
+		if err := money.Validate(); err != nil {
+			return appleads.Money{}, err
+		}
+		amount, ok := new(big.Rat).SetString(money.Amount)
+		if !ok || amount.Sign() < 0 {
+			return appleads.Money{}, errors.New("money amount must be non-negative")
+		}
+		if money.Currency != fallbackCurrency {
+			return appleads.Money{}, fmt.Errorf("currency %s does not match account currency %s", money.Currency, fallbackCurrency)
+		}
+		return money, nil
+	}
+	money := appleads.Money{Amount: strings.TrimSpace(fmt.Sprint(value)), Currency: fallbackCurrency}
+	if err := money.Validate(); err != nil {
+		return appleads.Money{}, err
+	}
+	amount, ok := new(big.Rat).SetString(money.Amount)
+	if !ok || amount.Sign() < 0 {
+		return appleads.Money{}, errors.New("money amount must be non-negative")
+	}
+	return money, nil
 }
 
-func moneyInField(value map[string]any, field, fallbackCurrency string) appleads.Money {
-	current := value[field]
-	if object, ok := current.(map[string]any); ok {
-		if nested, ok := object["value"].(map[string]any); ok {
-			object = nested
-		}
-		return appleads.Money{Amount: findStringField(object, "amount"), Currency: strings.ToUpper(firstNonEmptyTool(findStringField(object, "currency"), fallbackCurrency))}
+func directString(value map[string]any, field string) string {
+	current, exists := value[field]
+	if !exists || current == nil {
+		return ""
 	}
-	amount := fmt.Sprint(current)
-	if current == nil || amount == "<nil>" {
-		amount = "0"
+	result := fmt.Sprint(current)
+	if result == "<nil>" {
+		return ""
 	}
-	return appleads.Money{Amount: amount, Currency: fallbackCurrency}
+	return result
 }
 
 func firstNonEmptyTool(values ...string) string {

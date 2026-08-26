@@ -48,6 +48,8 @@ def main() -> None:
     require("PLUGIN_VERSION" in release_workflow, "release tag is not bound to plugin version")
     require("workflow_call:" in registry_workflow, "registry workflow is not reusable")
     require(f'default: "{version}"' in registry_workflow, "registry workflow default version mismatch")
+    require("ref: refs/tags/v${{ inputs.version }}" in registry_workflow, "registry workflow must check out the exact released tag")
+    require('test "$(git rev-parse HEAD)" = "$TAG_COMMIT"' in registry_workflow, "registry workflow does not bind metadata to the tag commit")
     require("name: apple-ads-operator" in skill, "skill frontmatter missing")
     areas = [item["area"] for item in operations["operations"]]
     require(len(areas) == len(set(areas)), "operation areas must be unique")
@@ -55,12 +57,14 @@ def main() -> None:
         require((ROOT / "skills/apple-ads-operator/references" / reference).is_file(), f"missing {reference}")
     require((ROOT / "docs/MIGRATION-v0.2.md").is_file(), "v0.2 migration notes missing")
     require((ROOT / "docs/MIGRATION-v0.3.md").is_file(), "v0.3 migration notes missing")
+    require((ROOT / "docs/MIGRATION-v0.3.1.md").is_file(), "v0.3.1 migration notes missing")
     require("optimization-read" in areas and "optimization-apply" in areas, "optimization operation coverage missing")
     require("resource-lifecycle" in areas and "shared-budgets" in areas, "v0.3 lifecycle coverage missing")
     lifecycle = next(item for item in operations["operations"] if item["area"] == "resource-lifecycle")
     require(lifecycle["classification"] == "destructive-mutation", "delete classification mismatch")
     require("--allow-deletes" in readme and "APPLE_ADS_ALLOW_DELETES" in readme, "README delete gates missing")
     require("optimization policy init" in readme and "optimization_plan" in readme, "README optimizer setup missing")
+    require("maxBid" in readme and "reconciliation" in readme.lower(), "README optimizer safety migration missing")
     require("scripts/audit_upstream.py" in (ROOT / ".github/workflows/upstream-audit.yml").read_text(), "upstream audit script is not scheduled")
     for source in ROOT.rglob("*.go"):
         if source.name.endswith("_test.go"):

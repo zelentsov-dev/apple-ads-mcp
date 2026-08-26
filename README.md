@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/zelentsov-dev/apple-ads-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/zelentsov-dev/apple-ads-mcp/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/zelentsov-dev/apple-ads-mcp)](https://github.com/zelentsov-dev/apple-ads-mcp/releases)
-[![Go](https://img.shields.io/badge/Go-1.26.6%2B-00ADD8?logo=go)](go.mod)
+[![Go](https://img.shields.io/badge/Go-1.26.7%2B-00ADD8?logo=go)](go.mod)
 [![License](https://img.shields.io/github/license/zelentsov-dev/apple-ads-mcp)](LICENSE)
 
 Apple Ads MCP is a local-first [Model Context Protocol](https://modelcontextprotocol.io/) server for the [Apple Ads Platform API v1](https://developer.apple.com/documentation/apple-ads-platform-api). It gives Codex, Claude, and other MCP clients typed tools to research, inspect, and safely operate App Store advertising accounts.
@@ -13,7 +13,7 @@ Apple Ads MCP is independent open-source software. It is not affiliated with, en
 
 ## Current release
 
-`v0.3.0` is the current release. It adds an on-demand local optimizer, bounded composite plan receipts, typed shared-budget workflows, and separately gated resource lifecycle operations. Existing v0.2 read, research, report, inventory, campaign, bulk keyword, recommendation, preview, apply, and verification tools remain available.
+`v0.3.1` is the current release. It hardens the v0.3 optimizer with crash-durable fail-closed write journaling, restart-safe reconciliation, reconciliation-aware cooldowns, exact completed-day evidence, strict nullable metric parsing, typed paginated reports, independent bid caps, and direct-ID create verification. Existing v0.2 read, research, report, inventory, campaign, bulk keyword, recommendation, preview, apply, and verification tools remain available.
 
 Optimization is never autonomous: the server has no scheduler and never changes spend in the background. A read-only session can build a baseline and plan. Applying a plan still requires every write gate, an active named policy, one receipt, a fresh report and inventory drift check, and item-level verification.
 
@@ -63,7 +63,7 @@ A write is possible only when all gates pass:
 5. `operations_apply` receives the same unexpired receipt.
 6. The affected inventory still matches the state captured during preview.
 
-Receipts expire after ten minutes and are single-use. Bulk receipts bind the entire inventory snapshot and return item-level `applied`, `failed`, or `unknown` states. Apple may partially accept a batch; the server never promises rollback.
+Preview receipts expire after ten minutes and are single-use for apply. Bulk receipts bind the entire inventory snapshot and return item-level `applied`, `failed`, or `unknown` states. Apple may partially accept a batch; the server never promises rollback. If an optimization apply has an unresolved outcome, a sanitized recovery recipe remains in owner-only local history so `operations_verify` can reconcile the supplied receipt after a process restart or normal preview eviction.
 
 Mutation requests are not retried after a timeout. The result is `committed_unverified`, or item-level `unknown`, until `operations_verify` and direct readback establish the actual state.
 
@@ -94,10 +94,10 @@ Download the archive for your platform from [GitHub Releases](https://github.com
 Apple silicon example:
 
 ```bash
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.0/apple-ads-mcp_0.3.0_darwin_arm64.tar.gz
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.0/checksums.txt
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.1/apple-ads-mcp_0.3.1_darwin_arm64.tar.gz
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.1/checksums.txt
 shasum -a 256 -c checksums.txt --ignore-missing
-tar -xzf apple-ads-mcp_0.3.0_darwin_arm64.tar.gz
+tar -xzf apple-ads-mcp_0.3.1_darwin_arm64.tar.gz
 sudo install -m 0755 apple-ads-mcp /usr/local/bin/apple-ads-mcp
 ```
 
@@ -106,14 +106,14 @@ sudo install -m 0755 apple-ads-mcp /usr/local/bin/apple-ads-mcp
 Each release publishes a checksum-pinned formula:
 
 ```bash
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.0/apple-ads-mcp.rb
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.1/apple-ads-mcp.rb
 brew install --formula ./apple-ads-mcp.rb
 ```
 
 ### OCI image
 
 ```bash
-docker pull ghcr.io/zelentsov-dev/apple-ads-mcp:0.3.0
+docker pull ghcr.io/zelentsov-dev/apple-ads-mcp:0.3.1
 ```
 
 The image runs `serve --stdio` by default. Mount `accounts.json` and its referenced private key read-only.
@@ -126,7 +126,7 @@ cd apple-ads-mcp
 go build -trimpath -o ./apple-ads-mcp ./cmd/apple-ads-mcp
 ```
 
-Go 1.26.6 or newer is required.
+Go 1.26.7 or newer is required.
 
 ## Apple API setup
 
@@ -236,9 +236,9 @@ apple-ads-mcp optimization policy validate --name mature-product-balanced
 apple-ads-mcp optimization doctor --policy mature-product-balanced
 ```
 
-Policies are stored in `~/.config/apple-ads-mcp/optimization-policies.json` with mode `0600`. Each policy binds one profile, one ad account, one promoted app, and at most 20 campaign IDs. `learning` mode requires no business target and only returns evidence. `active` mode requires `targetInstallCPA`, total and per-campaign daily-budget caps, and explicit permissions for budget, bid, strategy, pause, resume, and retest.
+Policies are stored in `~/.config/apple-ads-mcp/optimization-policies.json` with mode `0600`. Each policy binds one profile, one ad account, one promoted app, and at most 20 campaign IDs. `learning` mode requires no business target and only returns evidence. `active` mode requires `targetInstallCPA`, total and per-campaign daily-budget caps, and explicit permissions for budget, bid, strategy, pause, resume, and retest. A policy that allows bid changes must also set a positive, account-currency `maxBid`; the daily-budget cap is never reused as a bid cap.
 
-The `balanced` preset uses 28 completed days, compares the latest 7 days with the previous 7, requires at least 14 completed days, applies a 72-hour cooldown, normally proposes 10% changes, and never exceeds 20% per run. It can propose `MAX_CONVERSIONS` only for eligible Search Results Search Match inventory averaging at least five tap installs per day over 14 days. It never proposes deletion.
+The `balanced` preset requires exactly 28 unique consecutive completed UTC days ending yesterday, compares the latest 7 days with the previous 7, applies a 72-hour cooldown, normally proposes 10% changes, and never exceeds 20% per run. Missing, duplicate, future, malformed, or overflowing report evidence fails closed. It can propose `MAX_CONVERSIONS` only for eligible Search Results Search Match inventory averaging at least five tap installs per day over 14 days. It never proposes deletion.
 
 Typical agent flow:
 
@@ -248,7 +248,7 @@ Typical agent flow:
 4. Inspect `OperationImpact`, apply the same receipt once, then call `operations_verify`.
 5. Review bounded local history under `~/.local/share/apple-ads-mcp/optimization/`.
 
-No credential, raw Apple envelope, or billing contact is stored in optimization history.
+Immediately before the first Apple write, the server durably persists a receipt-hash-bound `applying` intent and sanitized typed verification recipe under an inter-process file lock. POSIX commits sync the containing directory; Windows uses replace-with-write-through semantics. An unknown result, inconclusive verification, or interrupted history update blocks later optimization plans until `operations_verify` conclusively reconciles every affected item. Recovery survives process restart and normal in-memory receipt expiry, but requires the original opaque receipt from the operator. A reconciled `matched` or `matched_after` action starts cooldown from its original intent/apply time; `matched_before` does not. A campaign can be auto-resumed only when a verified optimizer-owned pause still has the same Apple `modificationTime`; any later manual change revokes that permission. No receipt, credential, raw Apple envelope, or billing contact is stored in optimization history.
 
 ## Shared budgets and lifecycle operations
 
@@ -292,7 +292,7 @@ The server returns these as bounded structured Apple errors, including whether t
 
 ## Compatibility
 
-v0.3 preserves all v0.2.1 tool names and schemas, then adds optimization, shared-budget mutation, bid-strategy, and lifecycle tools. See the [v0.3 migration notes](docs/MIGRATION-v0.3.md); older clients affected by the typed v0.2 schema change should also read the [v0.2 notes](docs/MIGRATION-v0.2.md).
+v0.3 preserves all v0.2.1 tool names and schemas, then adds optimization, shared-budget mutation, bid-strategy, and lifecycle tools. v0.3.1 adds a required `maxBid` when bid permission is enabled and fail-closed reconciliation rules; see the [v0.3.1 migration notes](docs/MIGRATION-v0.3.1.md). Older clients should also read the [v0.3 notes](docs/MIGRATION-v0.3.md) and [v0.2 notes](docs/MIGRATION-v0.2.md).
 
 The public tool schema is not frozen before v1.0. API-family scope and operation status are tracked in the [machine-readable operation matrix](api-contract/operations.json). The official Java client baseline and App Store endpoint inventory are tracked in [upstream-baseline.json](api-contract/upstream-baseline.json).
 

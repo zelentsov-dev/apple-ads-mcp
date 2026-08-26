@@ -371,15 +371,16 @@ func (input QueryInput) reportRequest(kind string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	allowed, ok := reportAllowedFields(kind)
+	metrics, ok := reportMetricFields(kind)
 	if !ok {
 		return nil, fmt.Errorf("unsupported report kind %q", kind)
 	}
-	if err := validateSelectedFields("fields", input.Fields, allowed); err != nil {
+	if err := validateSelectedFields("fields", input.Fields, metrics); err != nil {
 		return nil, err
 	}
+	selectors, _ := reportSelectorFields(kind)
 	for _, filter := range input.Filters {
-		if _, ok := allowed[filter.Field]; !ok {
+		if _, ok := selectors[filter.Field]; !ok {
 			return nil, fmt.Errorf("filter field %q is not supported by the %s report", filter.Field, kind)
 		}
 		if !allowedFilterOperator(filter.Operator) {
@@ -387,7 +388,7 @@ func (input QueryInput) reportRequest(kind string) (map[string]any, error) {
 		}
 	}
 	for _, sorting := range input.Sorting {
-		if _, ok := allowed[sorting.Field]; !ok {
+		if _, ok := selectors[sorting.Field]; !ok {
 			return nil, fmt.Errorf("sorting field %q is not supported by the %s report", sorting.Field, kind)
 		}
 		if !allowedSortOrder(sorting.Order) {
@@ -397,6 +398,13 @@ func (input QueryInput) reportRequest(kind string) (map[string]any, error) {
 	groupBy := reportGroupBy(kind)
 	if err := validateSelectedFields("groupBy", input.GroupBy, groupBy); err != nil {
 		return nil, err
+	}
+	if input.Options != nil && len(input.GroupBy) > 0 {
+		for _, value := range input.Options.IncludeRows {
+			if strings.EqualFold(strings.TrimSpace(value), "EMPTY_METRICS") {
+				return nil, errors.New("EMPTY_METRICS cannot be combined with groupBy")
+			}
+		}
 	}
 	if input.TimeRange != nil {
 		granularity := strings.ToUpper(strings.TrimSpace(input.TimeRange.Granularity))
@@ -425,13 +433,44 @@ func validateSelectedFields(name string, values []string, allowed map[string]str
 	return nil
 }
 
-func reportAllowedFields(kind string) (map[string]struct{}, bool) {
+func reportMetricFields(kind string) (map[string]struct{}, bool) {
 	common := []string{
 		"localSpend", "impressions", "taps", "ttr", "cpt", "cpm", "tapInstalls", "tapInstallCPI",
 		"totalNewDownloads", "totalRedownloads", "viewInstalls", "totalInstalls", "tapNewDownloads", "tapRedownloads",
 		"viewNewDownloads", "viewRedownloads", "totalAvgCPI", "totalInstallRate", "tapInstallRate", "tapPreOrdersPlaced",
-		"viewPreOrdersPlaced", "totalPreOrdersPlaced", "countryOrRegion", "deviceClass",
+		"viewPreOrdersPlaced", "totalPreOrdersPlaced",
 	}
+	if _, ok := reportMetadataFields()[kind]; !ok {
+		return nil, false
+	}
+	result := make(map[string]struct{}, len(common))
+	for _, value := range common {
+		result[value] = struct{}{}
+	}
+	return result, true
+}
+
+func reportSelectorFields(kind string) (map[string]struct{}, bool) {
+	metadata := reportMetadataFields()
+	fields, ok := metadata[kind]
+	if !ok {
+		return nil, false
+	}
+	metrics, _ := reportMetricFields(kind)
+	result := make(map[string]struct{}, len(metrics)+len(fields))
+	for value := range metrics {
+		result[value] = struct{}{}
+	}
+	for _, value := range fields {
+		result[value] = struct{}{}
+	}
+	for value := range reportGroupBy(kind) {
+		result[value] = struct{}{}
+	}
+	return result, true
+}
+
+func reportMetadataFields() map[string][]string {
 	byKind := map[string][]string{
 		"campaigns":   {"id", "promotedObject", "promotedObjectType", "promotedObjectId", "name", "status", "deleted", "displayStatus", "modificationTime", "creationTime", "adAccountId", "systemStatus", "systemStatusReasons", "startTime", "endTime", "billingEvent", "systemStatusLimitingReasons", "targeting", "dailyBudget", "adChannelType", "bidStrategy", "gender", "ageRange", "locality", "countryCode", "adminArea", "storefront"},
 		"adgroups":    {"id", "campaignId", "adAccountId", "name", "status", "deleted", "systemStatus", "systemStatusReasons", "systemStatusLimitingReasons", "automatedKeywordsOptIn", "automatedKeywordsRequired", "pricingModel", "displayStatus", "modificationTime", "creationTime", "startTime", "endTime", "campaign", "bidStrategy", "cpaCap", "gender", "ageRange", "locality", "countryCode", "adminArea", "storefront"},
@@ -439,15 +478,7 @@ func reportAllowedFields(kind string) (map[string]struct{}, bool) {
 		"keywords":    {"id", "campaignId", "adAccountId", "deleted", "text", "status", "matchType", "bid", "adGroupId", "modificationTime", "creationTime", "displayStatus", "adGroup"},
 		"searchterms": {"campaignId", "adAccountId", "searchTermText", "searchTermSource", "keyword", "adGroupId", "adGroup"},
 	}
-	fields, ok := byKind[kind]
-	if !ok {
-		return nil, false
-	}
-	result := make(map[string]struct{}, len(common)+len(fields))
-	for _, value := range append(common, fields...) {
-		result[value] = struct{}{}
-	}
-	return result, true
+	return byKind
 }
 
 func reportGroupBy(kind string) map[string]struct{} {

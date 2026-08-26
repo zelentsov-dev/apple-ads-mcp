@@ -21,7 +21,7 @@ Start with a read-only Apple role. Enable write permissions only after read tool
 6. Run `apps_eligibility` for every target storefront and placement.
 7. Run `account_health` for the explicit app when a full readiness decision is needed.
 
-For optimization, create and validate a named policy with `apple-ads-mcp optimization policy init`, `optimization policy validate`, and `optimization doctor`. Start in `learning` mode. Move to `active` only after the operator has chosen a business `targetInstallCPA` and explicit budget/action caps.
+For optimization, create and validate a named policy with `apple-ads-mcp optimization policy init`, `optimization policy validate`, and `optimization doctor`. Start in `learning` mode. Move to `active` only after the operator has chosen a business `targetInstallCPA`, explicit budget/action caps, and an independent `maxBid` whenever bid actions are allowed.
 
 For an eligible `LOC` shared-budget workflow, initialize a private local billing profile with `apple-ads-mcp billing profile init`. The MCP receives only its local name. Never paste buyer names or billing email addresses into an MCP call or chat.
 

@@ -73,7 +73,7 @@ func (s *Service) recommendationPreview(store *operations.Store, kind, action st
 			}
 			suggested, err := moneyFromObject(recommendation[suggestedField])
 			if err != nil {
-				return failedPreview(fmt.Errorf("Apple recommendation %s: %w", suggestedField, err))
+				return failedPreview(fmt.Errorf("recommendation from Apple %s: %w", suggestedField, err))
 			}
 			applied := suggested
 			if input.AppliedAmount != nil {

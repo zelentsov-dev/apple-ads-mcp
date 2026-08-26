@@ -16,6 +16,7 @@ func validPolicy() Policy {
 		TargetInstallCPA:       &appleads.Money{Amount: "10.00", Currency: "USD"},
 		MaxTotalDailyBudget:    appleads.Money{Amount: "100.00", Currency: "USD"},
 		MaxCampaignDailyBudget: appleads.Money{Amount: "50.00", Currency: "USD"},
+		MaxBid:                 &appleads.Money{Amount: "5.00", Currency: "USD"},
 		Permissions:            Permissions{Budget: true, Bid: true, Strategy: true, Pause: true}, Preset: "balanced",
 	}
 }
@@ -31,6 +32,8 @@ func TestPolicyModesCapsAndTightening(t *testing.T) {
 		{"active target missing", func(p *Policy) { p.TargetInstallCPA = nil }, false},
 		{"learning target present", func(p *Policy) { p.Mode = "learning" }, false},
 		{"currency mismatch", func(p *Policy) { p.MaxCampaignDailyBudget.Currency = "EUR" }, false},
+		{"bid cap missing", func(p *Policy) { p.MaxBid = nil }, false},
+		{"bid cap currency mismatch", func(p *Policy) { p.MaxBid.Currency = "EUR" }, false},
 		{"unsafe name", func(p *Policy) { p.Name = "../policy" }, false},
 		{"looser step", func(p *Policy) { p.Thresholds.ChangeStepPercent = "11" }, false},
 		{"looser cooldown", func(p *Policy) { p.Thresholds.CooldownHours = 48 }, false},

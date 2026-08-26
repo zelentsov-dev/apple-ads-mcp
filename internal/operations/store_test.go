@@ -18,6 +18,7 @@ type fakeExecutor struct {
 	writes       int
 	ambiguous    bool
 	onRead       func()
+	readStates   map[string]any
 }
 
 type sequenceExecutor struct {
@@ -56,6 +57,9 @@ func (f *fakeExecutor) Do(_ context.Context, _, _ string, operation appleads.Ope
 	}
 	if f.onRead != nil {
 		f.onRead()
+	}
+	if value, exists := f.readStates[operation.Path()]; exists {
+		return appleads.Result{Data: value, Status: 200}, nil
 	}
 	return appleads.Result{Data: f.state, Status: 200}, nil
 }
@@ -119,6 +123,92 @@ func TestReceiptApplySingleUseAndBinding(t *testing.T) {
 	}
 	if _, err := store.Apply(context.Background(), executor, preview.Receipt); err == nil {
 		t.Fatal("expected receipt reuse to fail")
+	}
+}
+
+func TestApplyPreflightFailsBeforeWriteAndConsumesReceipt(t *testing.T) {
+	store := NewStore()
+	executor := &fakeExecutor{state: map[string]any{"status": "ENABLED"}}
+	verify, _ := appleads.ResourceGet("campaigns", "123")
+	mutation, _ := appleads.ResourceUpdate("campaigns", "123", map[string]any{"status": "PAUSED"})
+	preview, err := store.Preview(context.Background(), executor, "owner", "456", "pause", []string{"123"}, map[string]any{"status": "PAUSED"}, verify, mutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplyWithPreflight(context.Background(), executor, preview.Receipt, func(OperationPreview) error { return errors.New("disk unavailable") }); err == nil {
+		t.Fatal("expected preflight persistence failure")
+	}
+	if executor.writes != 0 {
+		t.Fatalf("writes=%d", executor.writes)
+	}
+	if _, err := store.Apply(context.Background(), executor, preview.Receipt); err == nil {
+		t.Fatal("preflight-failed receipt must be consumed")
+	}
+}
+
+func TestCreateVerificationReadsReturnedIDAndMatchesExpectedFields(t *testing.T) {
+	store := NewStore()
+	executor := &fakeExecutor{state: map[string]any{"result": []any{}}, mutationData: map[string]any{"id": "900"}}
+	query, _ := appleads.ResourceQuery("campaigns", map[string]any{"pagination": map[string]any{"pageSize": 200}})
+	mutation, _ := appleads.ResourceCreate("campaigns", map[string]any{"name": "fixture", "status": "PAUSED"})
+	preview, err := store.PreviewComposite(context.Background(), executor, "owner", "456", "create", nil, map[string]any{"name": "fixture", "status": "PAUSED"}, []VerificationRead{{Name: "inventory", Operation: query}}, mutation, PreviewOptions{Create: &CreateExpectation{Resource: "campaigns", Expected: map[string]any{"name": "fixture", "status": "PAUSED"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Apply(context.Background(), executor, preview.Receipt); err != nil {
+		t.Fatal(err)
+	}
+	executor.state = map[string]any{"id": "900", "name": "fixture", "status": "PAUSED"}
+	verification, err := store.Verify(context.Background(), executor, preview.Receipt)
+	if err != nil || verification.Status != "verified" {
+		t.Fatalf("verification=%+v err=%v", verification, err)
+	}
+	found := false
+	for _, object := range verification.Objects {
+		if object.Name == "created_target" && object.Status == "matched" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("verification=%+v", verification)
+	}
+}
+
+func TestAmbiguousCreateWithoutReturnedIDRemainsInconclusive(t *testing.T) {
+	store := NewStore()
+	executor := &fakeExecutor{state: map[string]any{"result": []any{}}, ambiguous: true}
+	query, _ := appleads.ResourceQuery("campaigns", map[string]any{"pagination": map[string]any{"pageSize": 200}})
+	mutation, _ := appleads.ResourceCreate("campaigns", map[string]any{"name": "fixture", "status": "PAUSED"})
+	preview, err := store.PreviewComposite(context.Background(), executor, "owner", "456", "create", nil, map[string]any{"name": "fixture", "status": "PAUSED"}, []VerificationRead{{Name: "inventory", Operation: query}}, mutation, PreviewOptions{Create: &CreateExpectation{Resource: "campaigns", Expected: map[string]any{"name": "fixture", "status": "PAUSED"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt, err := store.Apply(context.Background(), executor, preview.Receipt); err != nil || receipt.Status != "unknown" {
+		t.Fatalf("receipt=%+v err=%v", receipt, err)
+	}
+	executor.ambiguous = false
+	executor.state = map[string]any{"result": []any{map[string]any{"id": "901", "name": "fixture", "status": "PAUSED"}}}
+	executor.readStates = map[string]any{"campaigns/901": map[string]any{"id": "901", "name": "fixture", "status": "PAUSED"}}
+	verification, err := store.Verify(context.Background(), executor, preview.Receipt)
+	if err != nil || verification.Status != "inconclusive" {
+		t.Fatalf("verification=%+v err=%v", verification, err)
+	}
+}
+
+func TestVerifyRecoveryMatchesBeforeAndAfterWithoutStoredReceipt(t *testing.T) {
+	executor := &fakeExecutor{readStates: map[string]any{
+		"campaigns/100": map[string]any{"id": "100", "status": "PAUSED"},
+		"keywords/200":  map[string]any{"id": "200", "bid": map[string]any{"amount": "1.00", "currency": "USD"}},
+	}}
+	verification, err := VerifyRecovery(context.Background(), executor, "opaque-receipt", "owner", "456", []RecoveryItem{
+		{CorrelationID: "pause", CampaignID: "100", ResourceType: "campaign", Resource: "campaigns", TargetID: "100", Action: "pause", Before: map[string]any{"status": "ENABLED"}, After: map[string]any{"status": "PAUSED"}},
+		{CorrelationID: "bid", CampaignID: "100", ResourceType: "keyword", Resource: "keywords", TargetID: "200", Action: "bid_increase", Before: map[string]any{"bid": map[string]any{"amount": "1.00", "currency": "USD"}}, After: map[string]any{"bid": map[string]any{"amount": "1.10", "currency": "USD"}}},
+	})
+	if err != nil || verification.Status != "verified" || len(verification.Objects) != 2 {
+		t.Fatalf("verification=%+v err=%v", verification, err)
+	}
+	if verification.Objects[0].Status != "matched_after" || verification.Objects[1].Status != "matched_before" {
+		t.Fatalf("objects=%+v", verification.Objects)
 	}
 }
 

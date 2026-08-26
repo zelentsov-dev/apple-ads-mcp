@@ -8,7 +8,7 @@ The project is independent and is not affiliated with, endorsed by, or sponsored
 
 ## Architecture
 
-- Go 1.26.6+
+- Go 1.26.7+
 - Official MCP Go SDK
 - `cmd/apple-ads-mcp` contains only CLI wiring
 - Production code lives under `internal/`

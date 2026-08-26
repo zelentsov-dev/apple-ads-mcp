@@ -44,6 +44,7 @@ type CampaignEvidence struct {
 	AppleBudgetRecommendation *appleads.Money    `json:"appleBudgetRecommendation,omitempty"`
 	AppleTargetCPA            *appleads.Money    `json:"appleTargetCPARecommendation,omitempty"`
 	MaxConversionsEligible    bool               `json:"maxConversionsEligible"`
+	ModificationTime          string             `json:"modificationTime,omitempty"`
 }
 
 type MetricSummary struct {
@@ -74,9 +75,10 @@ type CampaignBaseline struct {
 }
 
 type Baseline struct {
-	Policy      Policy             `json:"policy"`
-	GeneratedAt string             `json:"generatedAt"`
-	Campaigns   []CampaignBaseline `json:"campaigns"`
+	Policy                 Policy             `json:"policy"`
+	GeneratedAt            string             `json:"generatedAt"`
+	ReconciliationRequired bool               `json:"reconciliationRequired"`
+	Campaigns              []CampaignBaseline `json:"campaigns"`
 }
 
 type PlanAction struct {
@@ -110,23 +112,46 @@ func BuildBaseline(policy Policy, evidence []CampaignEvidence, history History, 
 	if len(evidence) > maxCampaigns {
 		return Baseline{}, fmt.Errorf("baseline supports at most %d campaigns", maxCampaigns)
 	}
-	result := Baseline{Policy: policy, GeneratedAt: now.UTC().Format(time.RFC3339)}
+	result := Baseline{Policy: policy, GeneratedAt: now.UTC().Format(time.RFC3339), ReconciliationRequired: HistoryRequiresReconciliation(history)}
 	for _, campaign := range evidence {
 		if err := validateCampaignEvidence(campaign, policy.MaxTotalDailyBudget.Currency); err != nil {
 			return Baseline{}, err
 		}
-		metrics := completeMetrics(campaign.Daily, now)
-		last28 := tail(metrics, 28)
+		metrics, err := completedWindow(campaign.Daily, now, 28)
+		if err != nil {
+			return Baseline{}, fmt.Errorf("campaign %s completed-day evidence: %w", campaign.CampaignID, err)
+		}
+		last28 := metrics
+		for _, biddable := range campaign.Biddables {
+			if policy.Permissions.Bid && biddable.Bid != nil && ratOrZero(biddable.Bid.Amount).Cmp(ratOrZero(policy.MaxBid.Amount)) > 0 {
+				return Baseline{}, fmt.Errorf("campaign %s biddable %s current bid exceeds maxBid", campaign.CampaignID, biddable.ResourceID)
+			}
+			if _, err := completedWindow(biddable.Daily, now, 28); err != nil {
+				return Baseline{}, fmt.Errorf("campaign %s biddable %s completed-day evidence: %w", campaign.CampaignID, biddable.ResourceID, err)
+			}
+		}
 		last14 := tail(metrics, 14)
 		last7 := tail(last14, 7)
 		previous7 := head(last14, maxInt(0, len(last14)-7))
-		lastChange, optimizerPaused := historyState(history, campaign.CampaignID)
+		last28Summary, err := summarize(last28, campaign.DailyBudget)
+		if err != nil {
+			return Baseline{}, fmt.Errorf("campaign %s last 28 days: %w", campaign.CampaignID, err)
+		}
+		last7Summary, err := summarize(last7, campaign.DailyBudget)
+		if err != nil {
+			return Baseline{}, fmt.Errorf("campaign %s last 7 days: %w", campaign.CampaignID, err)
+		}
+		previous7Summary, err := summarize(previous7, campaign.DailyBudget)
+		if err != nil {
+			return Baseline{}, fmt.Errorf("campaign %s previous 7 days: %w", campaign.CampaignID, err)
+		}
+		lastChange, optimizerPaused := historyState(history, campaign.CampaignID, campaign.ModificationTime)
 		cooldownUntil := lastChange.Add(time.Duration(policy.Thresholds.CooldownHours) * time.Hour)
 		baseline := CampaignBaseline{
 			Campaign:                  campaign,
-			Last28Days:                summarize(last28, campaign.DailyBudget),
-			Last7Days:                 summarize(last7, campaign.DailyBudget),
-			Previous7Days:             summarize(previous7, campaign.DailyBudget),
+			Last28Days:                last28Summary,
+			Last7Days:                 last7Summary,
+			Previous7Days:             previous7Summary,
 			MinimumDataSatisfied:      len(metrics) >= policy.Thresholds.MinimumCompletedDays,
 			CooldownActive:            !lastChange.IsZero() && now.Before(cooldownUntil),
 			OptimizerPaused:           optimizerPaused,
@@ -212,6 +237,10 @@ func BuildPlan(policy Policy, evidence []CampaignEvidence, history History, now 
 		return Plan{}, err
 	}
 	plan := Plan{Policy: policy.Name, Mode: policy.Mode, GeneratedAt: now.UTC().Format(time.RFC3339), Baseline: baseline}
+	if baseline.ReconciliationRequired {
+		plan.Warnings = []string{"A previous optimization write has an unresolved outcome. Run operations_verify for that receipt before creating another plan."}
+		return plan, nil
+	}
 	if policy.Mode == "learning" {
 		plan.Warnings = []string{"Learning mode returns evidence only. Set an explicit targetInstallCPA and switch the policy to active before previewing changes."}
 		return plan, nil
@@ -226,7 +255,10 @@ func BuildPlan(policy Policy, evidence []CampaignEvidence, history History, now 
 		if !item.MinimumDataSatisfied || item.CooldownActive || systemBlocked {
 			continue
 		}
-		campaignActions := campaignPlan(item, baseline.Policy, thresholds, target, now)
+		campaignActions, err := campaignPlan(item, baseline.Policy, thresholds, target, now)
+		if err != nil {
+			return Plan{}, fmt.Errorf("campaign %s plan: %w", item.Campaign.CampaignID, err)
+		}
 		plan.Actions = append(plan.Actions, campaignActions...)
 		if len(plan.Actions) > 100 {
 			return Plan{}, errors.New("optimization plan exceeds 100 actions")
@@ -245,30 +277,33 @@ func BuildPlan(policy Policy, evidence []CampaignEvidence, history History, now 
 	return plan, nil
 }
 
-func campaignPlan(item CampaignBaseline, policy Policy, thresholds Thresholds, target *big.Rat, now time.Time) []PlanAction {
+func campaignPlan(item CampaignBaseline, policy Policy, thresholds Thresholds, target *big.Rat, now time.Time) ([]PlanAction, error) {
 	campaign := item.Campaign
-	last14 := combine(item.Last7Days, item.Previous7Days)
+	last14, err := combine(item.Last7Days, item.Previous7Days)
+	if err != nil {
+		return nil, err
+	}
 	actions := make([]PlanAction, 0, 8)
 	add := func(order int, resourceType, resourceID, action, reason string, before, after map[string]any) string {
 		id := fmt.Sprintf("%s-%03d", campaign.CampaignID, len(actions)+1)
 		actions = append(actions, PlanAction{CorrelationID: id, Order: order, CampaignID: campaign.CampaignID, ResourceType: resourceType, ResourceID: resourceID, Action: action, Before: before, After: after, Reason: reason})
 		return id
 	}
-	if policy.Permissions.Pause && shouldPause(item, target, thresholds) && campaign.Status != "PAUSED" {
+	if policy.Permissions.Pause && shouldPause(item, last14, target, thresholds) && campaign.Status != "PAUSED" {
 		add(10, "campaign", campaign.CampaignID, "pause", "CPI/spend pause guardrail was met in both completed seven-day windows", map[string]any{"status": campaign.Status}, map[string]any{"status": "PAUSED"})
-		return actions
+		return actions, nil
 	}
 	if policy.Permissions.Resume && policy.Permissions.Retest && item.OptimizerPaused && campaign.Status == "PAUSED" {
 		cap := minimumMoney(campaign.DailyBudget, appleads.Money{Amount: thresholds.RetestDailyBudgetCap, Currency: campaign.DailyBudget.Currency})
 		id := add(40, "campaign", campaign.CampaignID, "budget", "Optimizer-owned pause is eligible for a bounded retest", map[string]any{"dailyBudget": campaign.DailyBudget}, map[string]any{"dailyBudget": cap})
 		actions = append(actions, PlanAction{CorrelationID: fmt.Sprintf("%s-%03d", campaign.CampaignID, len(actions)+1), Order: 50, CampaignID: campaign.CampaignID, ResourceType: "campaign", ResourceID: campaign.CampaignID, Action: "resume", Before: map[string]any{"status": "PAUSED"}, After: map[string]any{"status": "ENABLED"}, Reason: "Retest was explicitly allowed for a campaign paused by this optimizer", DependsOn: []string{id}})
-		return actions
+		return actions, nil
 	}
 	if campaign.Status != "ENABLED" {
-		return actions
+		return actions, nil
 	}
 	if policy.Permissions.Budget {
-		if shouldIncrease(item, target, thresholds, campaign.AppleBudgetRecommendation != nil) {
+		if shouldIncrease(item, last14, target, thresholds, campaign.AppleBudgetRecommendation != nil) {
 			after := steppedMoney(campaign.DailyBudget, thresholds.ChangeStepPercent, true, policy.MaxCampaignDailyBudget)
 			if after.Amount != campaign.DailyBudget.Amount {
 				add(50, "campaign", campaign.CampaignID, "budget_increase", "Efficient campaign is budget-constrained or has an Apple recommendation", map[string]any{"dailyBudget": campaign.DailyBudget}, map[string]any{"dailyBudget": after})
@@ -290,33 +325,42 @@ func campaignPlan(item CampaignBaseline, policy Policy, thresholds Thresholds, t
 			if biddable.Bid == nil || biddable.Status != "ENABLED" {
 				continue
 			}
-			metrics := tail(completeMetrics(biddable.Daily, now), 14)
+			complete, _ := completedWindow(biddable.Daily, now, 28)
+			metrics := tail(complete, 14)
 			if len(metrics) < thresholds.MinimumCompletedDays {
 				continue
 			}
-			summary := summarize(metrics, campaign.DailyBudget)
+			summary, err := summarize(metrics, campaign.DailyBudget)
+			if err != nil {
+				return nil, fmt.Errorf("biddable %s summary: %w", biddable.ResourceID, err)
+			}
 			cpi := last14Rat(summary)
 			increaseRatio, _ := positiveRat(thresholds.IncreaseMaximumCPARatio)
 			increaseThreshold := new(big.Rat).Mul(target, increaseRatio)
-			last7 := summarize(tail(metrics, 7), campaign.DailyBudget)
-			previous7 := summarize(head(metrics, len(metrics)-7), campaign.DailyBudget)
+			last7, err := summarize(tail(metrics, 7), campaign.DailyBudget)
+			if err != nil {
+				return nil, fmt.Errorf("biddable %s last 7 days: %w", biddable.ResourceID, err)
+			}
+			previous7, err := summarize(head(metrics, len(metrics)-7), campaign.DailyBudget)
+			if err != nil {
+				return nil, fmt.Errorf("biddable %s previous 7 days: %w", biddable.ResourceID, err)
+			}
 			decreaseRatio, _ := positiveRat(thresholds.DecreaseMinimumCPARatio)
 			decreaseThreshold := new(big.Rat).Mul(target, decreaseRatio)
 			if summary.TapInstalls >= int64(thresholds.IncreaseMinimumInstalls) && cpi != nil && cpi.Cmp(increaseThreshold) <= 0 {
-				after := steppedMoney(*biddable.Bid, thresholds.ChangeStepPercent, true, policy.MaxCampaignDailyBudget)
+				after := steppedMoney(*biddable.Bid, thresholds.ChangeStepPercent, true, *policy.MaxBid)
 				add(30, biddable.ResourceType, biddable.ResourceID, "bid_increase", "Biddable object has sufficient installs below target CPI", map[string]any{"bid": *biddable.Bid}, map[string]any{"bid": after})
 			} else if last7.TapInstalls >= int64(thresholds.DecreaseMinimumInstalls) && previous7.TapInstalls >= int64(thresholds.DecreaseMinimumInstalls) &&
 				last14Rat(last7) != nil && last14Rat(previous7) != nil && last14Rat(last7).Cmp(decreaseThreshold) >= 0 && last14Rat(previous7).Cmp(decreaseThreshold) >= 0 {
-				after := steppedMoney(*biddable.Bid, thresholds.ChangeStepPercent, false, policy.MaxCampaignDailyBudget)
+				after := steppedMoney(*biddable.Bid, thresholds.ChangeStepPercent, false, *policy.MaxBid)
 				add(20, biddable.ResourceType, biddable.ResourceID, "bid_decrease", "Biddable object has sufficient installs above target CPI", map[string]any{"bid": *biddable.Bid}, map[string]any{"bid": after})
 			}
 		}
 	}
-	return actions
+	return actions, nil
 }
 
-func shouldIncrease(item CampaignBaseline, target *big.Rat, thresholds Thresholds, hasAppleRecommendation bool) bool {
-	combined := combine(item.Last7Days, item.Previous7Days)
+func shouldIncrease(item CampaignBaseline, combined MetricSummary, target *big.Rat, thresholds Thresholds, hasAppleRecommendation bool) bool {
 	cpi := last14Rat(combined)
 	maximum, _ := positiveRat(thresholds.IncreaseMaximumCPARatio)
 	utilization, _ := positiveRat(thresholds.IncreaseBudgetUtilization)
@@ -331,8 +375,7 @@ func shouldDecrease(item CampaignBaseline, target *big.Rat, thresholds Threshold
 		last14Rat(item.Last7Days) != nil && last14Rat(item.Previous7Days) != nil && last14Rat(item.Last7Days).Cmp(threshold) >= 0 && last14Rat(item.Previous7Days).Cmp(threshold) >= 0
 }
 
-func shouldPause(item CampaignBaseline, target *big.Rat, thresholds Thresholds) bool {
-	combined := combine(item.Last7Days, item.Previous7Days)
+func shouldPause(item CampaignBaseline, combined MetricSummary, target *big.Rat, thresholds Thresholds) bool {
 	spendMultiple, _ := positiveRat(thresholds.PauseSpendMultiple)
 	if combined.TapInstalls == 0 && ratOrZero(combined.Spend.Amount).Cmp(new(big.Rat).Mul(target, spendMultiple)) >= 0 {
 		return true
@@ -343,7 +386,7 @@ func shouldPause(item CampaignBaseline, target *big.Rat, thresholds Thresholds) 
 		last14Rat(item.Last7Days) != nil && last14Rat(item.Previous7Days) != nil && last14Rat(item.Last7Days).Cmp(threshold) >= 0 && last14Rat(item.Previous7Days).Cmp(threshold) >= 0
 }
 
-func summarize(metrics []DailyMetric, budget appleads.Money) MetricSummary {
+func summarize(metrics []DailyMetric, budget appleads.Money) (MetricSummary, error) {
 	spend := new(big.Rat)
 	taps := int64(0)
 	impressions := int64(0)
@@ -352,9 +395,19 @@ func summarize(metrics []DailyMetric, budget appleads.Money) MetricSummary {
 	for _, metric := range metrics {
 		amount := ratOrZero(metric.Spend.Amount)
 		spend.Add(spend, amount)
-		taps += metric.Taps
-		impressions += metric.Impressions
-		installs += metric.TapInstalls
+		var err error
+		taps, err = addCount(taps, metric.Taps, "taps")
+		if err != nil {
+			return MetricSummary{}, err
+		}
+		impressions, err = addCount(impressions, metric.Impressions, "impressions")
+		if err != nil {
+			return MetricSummary{}, err
+		}
+		installs, err = addCount(installs, metric.TapInstalls, "tapInstalls")
+		if err != nil {
+			return MetricSummary{}, err
+		}
 		if metric.TapInstalls > 0 {
 			dailyCPIs = append(dailyCPIs, new(big.Rat).Quo(amount, big.NewRat(metric.TapInstalls, 1)))
 		}
@@ -381,43 +434,194 @@ func summarize(metrics []DailyMetric, budget appleads.Money) MetricSummary {
 		result.DailyCPIP25 = decimal(percentile(dailyCPIs, 0.25))
 		result.DailyCPIP75 = decimal(percentile(dailyCPIs, 0.75))
 	}
-	return result
+	return result, nil
 }
 
-func completeMetrics(metrics []DailyMetric, now time.Time) []DailyMetric {
-	today := now.UTC().Format("2006-01-02")
-	result := make([]DailyMetric, 0, len(metrics))
+func completedWindow(metrics []DailyMetric, now time.Time, days int) ([]DailyMetric, error) {
+	if days <= 0 {
+		return nil, errors.New("completed-day window must be positive")
+	}
+	byDate := make(map[string]DailyMetric, len(metrics))
 	for _, metric := range metrics {
-		if string(metric.Date) < today {
-			result = append(result, metric)
+		date := string(metric.Date)
+		if _, exists := byDate[date]; exists {
+			return nil, fmt.Errorf("duplicate date %s", date)
+		}
+		byDate[date] = metric
+	}
+	end := startOfUTCDay(now).AddDate(0, 0, -1)
+	start := end.AddDate(0, 0, -(days - 1))
+	result := make([]DailyMetric, 0, days)
+	for date := start; !date.After(end); date = date.AddDate(0, 0, 1) {
+		key := date.Format("2006-01-02")
+		metric, exists := byDate[key]
+		if !exists {
+			return nil, fmt.Errorf("missing completed date %s", key)
+		}
+		result = append(result, metric)
+	}
+	if len(byDate) != days {
+		return nil, fmt.Errorf("expected exactly %d completed dates ending %s; received %d", days, end.Format("2006-01-02"), len(byDate))
+	}
+	return result, nil
+}
+
+func startOfUTCDay(value time.Time) time.Time {
+	utc := value.UTC()
+	return time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func historyState(history History, campaignID, currentModificationTime string) (time.Time, bool) {
+	var latest time.Time
+	var pauseReceipt string
+	var pauseModificationTime string
+	for _, applied := range effectiveHistoryActions(history) {
+		action := applied.Action
+		if action.CampaignID != campaignID {
+			continue
+		}
+		occurred, err := time.Parse(time.RFC3339, action.OccurredAt)
+		if err != nil || occurred.Before(latest) {
+			continue
+		}
+		latest = occurred
+		if action.ResourceType == "campaign" && action.Action == "pause" {
+			pauseReceipt = applied.ReceiptHash
+			pauseModificationTime = findHistoryString(applied.VerifiedAfter, "modificationTime")
+		}
+		if action.ResourceType == "campaign" && action.Action == "resume" {
+			pauseReceipt = ""
+			pauseModificationTime = ""
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Date < result[j].Date })
+	if pauseReceipt == "" || currentModificationTime == "" {
+		return latest, false
+	}
+	return latest, pauseModificationTime != "" && pauseModificationTime == currentModificationTime
+}
+
+type effectiveHistoryAction struct {
+	Action        HistoryAction
+	ReceiptHash   string
+	VerifiedAfter map[string]any
+}
+
+func effectiveHistoryActions(history History) []effectiveHistoryAction {
+	type state struct {
+		effectiveHistoryAction
+		known   bool
+		applied bool
+	}
+	states := map[string]*state{}
+	order := make([]string, 0)
+	for entryIndex, entry := range history.Entries {
+		for actionIndex, action := range entry.Actions {
+			if entry.Status == "previewed" || action.Status == "previewed" {
+				continue
+			}
+			key := historyActionKey(entry.ReceiptHash, action, entryIndex, actionIndex)
+			current, exists := states[key]
+			if !exists {
+				current = &state{effectiveHistoryAction: effectiveHistoryAction{Action: action, ReceiptHash: entry.ReceiptHash}}
+				states[key] = current
+				order = append(order, key)
+			}
+			current.Action = mergeHistoryAction(current.Action, action)
+			switch action.Status {
+			case "applied":
+				current.known, current.applied = true, true
+			case "failed", "skipped", "not_attempted":
+				current.known, current.applied = true, false
+			case "unknown", "pending":
+				current.known = false
+			}
+		}
+		if entry.Status != "verification_verified" {
+			continue
+		}
+		for actionIndex, action := range entry.Verification {
+			key := historyActionKey(entry.ReceiptHash, action, entryIndex, actionIndex)
+			current, exists := states[key]
+			if !exists {
+				continue
+			}
+			switch action.Status {
+			case "matched", "matched_after":
+				current.known, current.applied = true, true
+				current.VerifiedAfter = action.After
+			case "matched_before":
+				current.known, current.applied = true, false
+				current.VerifiedAfter = nil
+			}
+		}
+	}
+	result := make([]effectiveHistoryAction, 0, len(states))
+	for _, key := range order {
+		current := states[key]
+		if current.known && current.applied {
+			result = append(result, current.effectiveHistoryAction)
+		}
+	}
 	return result
 }
 
-func historyState(history History, campaignID string) (time.Time, bool) {
-	var latest time.Time
-	paused := false
-	for _, entry := range history.Entries {
-		for _, action := range entry.Actions {
-			if action.CampaignID != campaignID || action.Status != "applied" {
-				continue
-			}
-			occurred, err := time.Parse(time.RFC3339, action.OccurredAt)
-			if err != nil || occurred.Before(latest) {
-				continue
-			}
-			latest = occurred
-			if action.ResourceType == "campaign" && action.Action == "pause" {
-				paused = true
-			}
-			if action.ResourceType == "campaign" && action.Action == "resume" {
-				paused = false
+func historyActionKey(receiptHash string, action HistoryAction, entryIndex, actionIndex int) string {
+	if receiptHash == "" {
+		return fmt.Sprintf("legacy:%d:%d", entryIndex, actionIndex)
+	}
+	if action.CorrelationID != "" {
+		return receiptHash + ":" + action.CorrelationID
+	}
+	return receiptHash + ":" + action.CampaignID + ":" + action.ResourceType + ":" + action.ResourceID + ":" + action.Action
+}
+
+func mergeHistoryAction(existing, incoming HistoryAction) HistoryAction {
+	result := incoming
+	if result.CorrelationID == "" {
+		result.CorrelationID = existing.CorrelationID
+	}
+	if result.CampaignID == "" {
+		result.CampaignID = existing.CampaignID
+	}
+	if result.ResourceType == "" {
+		result.ResourceType = existing.ResourceType
+	}
+	if result.Resource == "" {
+		result.Resource = existing.Resource
+	}
+	if result.ResourceID == "" {
+		result.ResourceID = existing.ResourceID
+	}
+	if result.Action == "" {
+		result.Action = existing.Action
+	}
+	if result.Reason == "" {
+		result.Reason = existing.Reason
+	}
+	if result.Before == nil {
+		result.Before = existing.Before
+	}
+	if result.After == nil {
+		result.After = existing.After
+	}
+	if result.OccurredAt == "" || result.Status == "pending" && existing.OccurredAt != "" {
+		result.OccurredAt = existing.OccurredAt
+	}
+	return result
+}
+
+func findHistoryString(value map[string]any, field string) string {
+	if current, ok := value[field]; ok {
+		return fmt.Sprint(current)
+	}
+	for _, current := range value {
+		if nested, ok := current.(map[string]any); ok {
+			if found := findHistoryString(nested, field); found != "" {
+				return found
 			}
 		}
 	}
-	return latest, paused
+	return ""
 }
 
 func enforcePlanBudgetCaps(plan *Plan, policy Policy) error {
@@ -442,9 +646,21 @@ func enforcePlanBudgetCaps(plan *Plan, policy Policy) error {
 	return nil
 }
 
-func combine(left, right MetricSummary) MetricSummary {
+func combine(left, right MetricSummary) (MetricSummary, error) {
 	spend := new(big.Rat).Add(ratOrZero(left.Spend.Amount), ratOrZero(right.Spend.Amount))
-	result := MetricSummary{Days: left.Days + right.Days, Spend: appleads.Money{Amount: decimal(spend), Currency: left.Spend.Currency}, Taps: left.Taps + right.Taps, Impressions: left.Impressions + right.Impressions, TapInstalls: left.TapInstalls + right.TapInstalls}
+	taps, err := addCount(left.Taps, right.Taps, "taps")
+	if err != nil {
+		return MetricSummary{}, err
+	}
+	impressions, err := addCount(left.Impressions, right.Impressions, "impressions")
+	if err != nil {
+		return MetricSummary{}, err
+	}
+	installs, err := addCount(left.TapInstalls, right.TapInstalls, "tapInstalls")
+	if err != nil {
+		return MetricSummary{}, err
+	}
+	result := MetricSummary{Days: left.Days + right.Days, Spend: appleads.Money{Amount: decimal(spend), Currency: left.Spend.Currency}, Taps: taps, Impressions: impressions, TapInstalls: installs}
 	if result.TapInstalls > 0 {
 		result.TapInstallCPI = decimal(new(big.Rat).Quo(spend, big.NewRat(result.TapInstalls, 1)))
 	}
@@ -454,7 +670,17 @@ func combine(left, right MetricSummary) MetricSummary {
 		rightSpend := ratOrZero(right.BudgetUtilization)
 		result.BudgetUtilization = decimal(new(big.Rat).Quo(new(big.Rat).Add(new(big.Rat).Mul(leftSpend, big.NewRat(int64(left.Days), 1)), new(big.Rat).Mul(rightSpend, big.NewRat(int64(right.Days), 1))), big.NewRat(weightedDays, 1)))
 	}
-	return result
+	return result, nil
+}
+
+func addCount(current, next int64, field string) (int64, error) {
+	if current < 0 || next < 0 {
+		return 0, fmt.Errorf("%s total contains a negative value", field)
+	}
+	if current > (1<<63-1)-next {
+		return 0, fmt.Errorf("%s total exceeds 64-bit integer range", field)
+	}
+	return current + next, nil
 }
 
 func steppedMoney(current appleads.Money, percent string, increase bool, cap appleads.Money) appleads.Money {
@@ -545,7 +771,20 @@ func maxInt(left, right int) int {
 	return right
 }
 
-func ParseInt(value any) int64 {
-	parsed, _ := strconv.ParseInt(fmt.Sprint(value), 10, 64)
-	return parsed
+func ParseCount(value any, field string) (int64, error) {
+	if value == nil {
+		return 0, fmt.Errorf("%s is missing", field)
+	}
+	text := strings.TrimSpace(fmt.Sprint(value))
+	if text == "" || text == "<nil>" {
+		return 0, fmt.Errorf("%s is missing", field)
+	}
+	parsed, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a non-negative 64-bit integer", field)
+	}
+	if parsed < 0 {
+		return 0, fmt.Errorf("%s must be non-negative", field)
+	}
+	return parsed, nil
 }

@@ -4,19 +4,38 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/zelentsov-dev/apple-ads-mcp/internal/appleads"
+	"github.com/zelentsov-dev/apple-ads-mcp/internal/config"
+	"github.com/zelentsov-dev/apple-ads-mcp/internal/optimization"
 )
 
+type appleAdsManager interface {
+	Do(context.Context, string, string, appleads.Operation) (appleads.Result, error)
+	Profile(string) (config.Profile, error)
+	Profiles() []config.PublicProfile
+}
+
 type Service struct {
-	manager      *appleads.Manager
+	manager      appleAdsManager
 	allowWrites  bool
 	allowDeletes bool
 	version      string
 	policyPath   string
 	billingPath  string
 	historyRoot  string
+	historyOnce  sync.Once
+	historyStore *optimization.HistoryStore
+	historyErr   error
+}
+
+func (s *Service) optimizationHistoryStore() (*optimization.HistoryStore, error) {
+	s.historyOnce.Do(func() {
+		s.historyStore, s.historyErr = optimization.NewHistoryStore(s.historyRoot)
+	})
+	return s.historyStore, s.historyErr
 }
 
 func NewService(manager *appleads.Manager, allowWrites bool, version string) *Service {
@@ -521,7 +540,7 @@ func (s *Service) appOpportunities(ctx context.Context, _ *mcp.CallToolRequest, 
 		return failed(err)
 	}
 	if !containsAdamID(owned.Data, input.AdamID) {
-		return failed(fmt.Errorf("Apple did not confirm adamId %s as an owned app for this account and storefront selection", input.AdamID))
+		return failed(fmt.Errorf("ownership response from Apple did not confirm adamId %s for this account and storefront selection", input.AdamID))
 	}
 	adamID, err := numericAdamID(input.AdamID)
 	if err != nil {

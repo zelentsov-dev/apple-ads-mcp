@@ -12,7 +12,7 @@ On POSIX systems, configuration and state files must be regular owner-only files
 
 ## Optimization
 
-`optimization_baseline` and `optimization_plan` are read-only. A policy in `learning` mode never creates an apply receipt. An `active` policy requires an explicit target install CPA, currency-matched budget caps, and per-action permissions.
+`optimization_baseline` and `optimization_plan` are read-only. A policy in `learning` mode never creates an apply receipt. An `active` policy requires an explicit target install CPA, currency-matched budget caps, and per-action permissions. Starting with v0.3.1, bid permission also requires an independent currency-matched `maxBid`; see [MIGRATION-v0.3.1.md](MIGRATION-v0.3.1.md).
 
 `optimization_plan_preview` can bind up to 100 ordered actions affecting at most 20 campaigns to one ten-minute receipt. Apply re-reads all inventory and report fingerprints. A confirmed independent Apple `4xx` can leave unrelated actions eligible to continue; an ambiguous write result stops the remaining plan. There is no retry or rollback.
 

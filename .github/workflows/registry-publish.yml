@@ -12,7 +12,7 @@ on:
       version:
         description: Released semantic version without a v prefix
         required: true
-        default: "0.3.0"
+        default: "0.3.1"
 
 permissions:
   contents: read
@@ -30,6 +30,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: refs/tags/v${{ inputs.version }}
       - name: Validate released version
         env:
           RELEASE_VERSION: ${{ inputs.version }}
@@ -40,6 +41,7 @@ jobs:
           test "$RELEASE_VERSION" = "$PLUGIN_VERSION"
           TAG_NAME="v${RELEASE_VERSION}"
           TAG_COMMIT="$(git rev-parse --verify "refs/tags/${TAG_NAME}^{commit}")"
+          test "$(git rev-parse HEAD)" = "$TAG_COMMIT"
           git merge-base --is-ancestor "$TAG_COMMIT" origin/main
           gh release view "$TAG_NAME" --json isDraft,tagName \
             --jq 'select(.isDraft == false and .tagName == "'"$TAG_NAME"'") | .tagName' \

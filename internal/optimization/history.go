@@ -54,6 +54,7 @@ type HistoryAction struct {
 	CorrelationID string         `json:"correlationId"`
 	CampaignID    string         `json:"campaignId"`
 	ResourceType  string         `json:"resourceType"`
+	Resource      string         `json:"resource,omitempty"`
 	ResourceID    string         `json:"resourceId"`
 	Action        string         `json:"action"`
 	Status        string         `json:"status"`
@@ -97,6 +98,11 @@ func NewHistoryStore(root string) (*HistoryStore, error) {
 func (s *HistoryStore) Load(policy string) (History, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	unlock, err := s.lock(policy)
+	if err != nil {
+		return History{}, err
+	}
+	defer unlock()
 	return s.loadLocked(policy)
 }
 
@@ -106,6 +112,11 @@ func (s *HistoryStore) Append(policy string, entry HistoryEntry) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	unlock, err := s.lock(policy)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	history, err := s.loadLocked(policy)
 	if err != nil {
 		return err
@@ -114,10 +125,231 @@ func (s *HistoryStore) Append(policy string, entry HistoryEntry) error {
 		entry.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	history.Entries = append(history.Entries, entry)
-	if len(history.Entries) > maxHistoryEntries {
-		history.Entries = append([]HistoryEntry(nil), history.Entries[len(history.Entries)-maxHistoryEntries:]...)
+	history.Entries, err = boundHistoryEntries(history.Entries)
+	if err != nil {
+		return err
 	}
 	return s.writeLocked(policy, history)
+}
+
+func (s *HistoryStore) BeginIntent(policy string, entry HistoryEntry) error {
+	if entry.Status != "applying" {
+		return errors.New("optimization intent status must be applying")
+	}
+	if strings.TrimSpace(entry.ReceiptHash) == "" || strings.TrimSpace(entry.Profile) == "" || strings.TrimSpace(entry.AdAccountID) == "" {
+		return errors.New("optimization intent requires receiptHash, profile, and adAccountId")
+	}
+	if len(entry.Actions) == 0 || len(entry.Actions) > 100 {
+		return errors.New("optimization intent requires 1 to 100 recovery actions")
+	}
+	for _, action := range entry.Actions {
+		if strings.TrimSpace(action.CorrelationID) == "" || strings.TrimSpace(action.Resource) == "" || strings.TrimSpace(action.ResourceID) == "" || strings.TrimSpace(action.Action) == "" {
+			return errors.New("optimization recovery action requires correlationId, resource, resourceId, and action")
+		}
+	}
+	if err := validateHistoryEntry(entry); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	unlock, err := s.lock(policy)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	history, err := s.loadLocked(policy)
+	if err != nil {
+		return err
+	}
+	if HistoryRequiresReconciliation(history) {
+		return errors.New("a previous optimization write requires operations_verify before another apply")
+	}
+	if entry.CreatedAt == "" {
+		entry.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	history.Entries = append(history.Entries, entry)
+	history.Entries, err = boundHistoryEntries(history.Entries)
+	if err != nil {
+		return err
+	}
+	return s.writeLocked(policy, history)
+}
+
+func HistoryRequiresReconciliation(history History) bool {
+	for _, unresolved := range receiptReconciliationStates(history) {
+		if unresolved {
+			return true
+		}
+	}
+	return false
+}
+
+func ReceiptRequiresReconciliation(history History, receiptHash string) bool {
+	return receiptReconciliationStates(history)[strings.TrimSpace(receiptHash)]
+}
+
+func ReconciliationEntry(history History, receiptHash string) (HistoryEntry, bool) {
+	receiptHash = strings.TrimSpace(receiptHash)
+	if receiptHash == "" || !ReceiptRequiresReconciliation(history, receiptHash) {
+		return HistoryEntry{}, false
+	}
+	for _, entry := range history.Entries {
+		if entry.ReceiptHash == receiptHash && entry.Status == "applying" && len(entry.Actions) > 0 {
+			return entry, true
+		}
+	}
+	for _, entry := range history.Entries {
+		if entry.ReceiptHash == receiptHash && len(entry.Actions) > 0 {
+			return entry, true
+		}
+	}
+	return HistoryEntry{}, false
+}
+
+func receiptReconciliationStates(history History) map[string]bool {
+	unresolved := map[string]bool{}
+	for _, entry := range history.Entries {
+		if entry.ReceiptHash == "" {
+			continue
+		}
+		switch {
+		case entry.Status == "applying":
+			unresolved[entry.ReceiptHash] = true
+		case entry.Status == "unknown":
+			unresolved[entry.ReceiptHash] = true
+		case entry.Status == "verification_verified":
+			unresolved[entry.ReceiptHash] = false
+		case strings.HasPrefix(entry.Status, "verification_"):
+			unresolved[entry.ReceiptHash] = true
+		default:
+			unknown := false
+			for _, action := range entry.Actions {
+				if action.Status == "unknown" || action.Status == "pending" {
+					unknown = true
+					break
+				}
+			}
+			unresolved[entry.ReceiptHash] = unknown
+		}
+	}
+	return unresolved
+}
+
+func boundHistoryEntries(entries []HistoryEntry) ([]HistoryEntry, error) {
+	entries = materializeHistoryActionCarriers(entries)
+	if len(entries) <= maxHistoryEntries {
+		return append([]HistoryEntry(nil), entries...), nil
+	}
+	states := receiptReconciliationStates(History{Entries: entries})
+	protected := make(map[int]struct{})
+	for receiptHash, unresolved := range states {
+		if !unresolved {
+			continue
+		}
+		protectedIndex := -1
+		for index, entry := range entries {
+			if entry.ReceiptHash == receiptHash && entry.Status == "applying" && len(entry.Actions) > 0 {
+				protectedIndex = index
+				break
+			}
+		}
+		if protectedIndex < 0 {
+			for index, entry := range entries {
+				if entry.ReceiptHash == receiptHash && len(entry.Actions) > 0 {
+					protectedIndex = index
+					break
+				}
+			}
+		}
+		if protectedIndex < 0 {
+			return nil, fmt.Errorf("unresolved receipt %s has no recoverable intent", receiptHash)
+		}
+		protected[protectedIndex] = struct{}{}
+	}
+	if len(protected) > maxHistoryEntries {
+		return nil, errors.New("unresolved optimization receipts exceed bounded history capacity")
+	}
+	selected := make(map[int]struct{}, maxHistoryEntries)
+	for index := range protected {
+		selected[index] = struct{}{}
+	}
+	for index := len(entries) - 1; index >= 0 && len(selected) < maxHistoryEntries; index-- {
+		selected[index] = struct{}{}
+	}
+	result := make([]HistoryEntry, 0, len(selected))
+	for index, entry := range entries {
+		if _, exists := selected[index]; exists {
+			result = append(result, entry)
+		}
+	}
+	return result, nil
+}
+
+func materializeHistoryActionCarriers(entries []HistoryEntry) []HistoryEntry {
+	result := append([]HistoryEntry(nil), entries...)
+	carriers := make(map[string][]HistoryAction)
+	for index, entry := range result {
+		receiptHash := strings.TrimSpace(entry.ReceiptHash)
+		if receiptHash == "" {
+			continue
+		}
+		if entry.Status == "verification_verified" && len(entry.Verification) > 0 {
+			entry.Actions = mergeHistoryActions(carriers[receiptHash], entry.Actions)
+			result[index] = entry
+		}
+		if len(entry.Actions) > 0 {
+			carriers[receiptHash] = mergeHistoryActions(carriers[receiptHash], entry.Actions)
+		}
+	}
+	for receiptHash, unresolved := range receiptReconciliationStates(History{Entries: result}) {
+		if !unresolved {
+			continue
+		}
+		for index, entry := range result {
+			if entry.ReceiptHash == receiptHash && entry.Status == "applying" && len(entry.Actions) > 0 {
+				entry.Actions = append([]HistoryAction(nil), carriers[receiptHash]...)
+				result[index] = entry
+				break
+			}
+		}
+	}
+	return result
+}
+
+func mergeHistoryActions(existing, incoming []HistoryAction) []HistoryAction {
+	result := append([]HistoryAction(nil), existing...)
+	positions := make(map[string]int, len(result))
+	for index, action := range result {
+		positions[historyActionIdentity(action)] = index
+	}
+	for _, action := range incoming {
+		identity := historyActionIdentity(action)
+		if index, exists := positions[identity]; exists {
+			result[index] = mergeHistoryAction(result[index], action)
+			continue
+		}
+		positions[identity] = len(result)
+		result = append(result, action)
+	}
+	return result
+}
+
+func historyActionIdentity(action HistoryAction) string {
+	if action.CorrelationID != "" {
+		return "correlation:" + action.CorrelationID
+	}
+	return strings.Join([]string{action.CampaignID, action.ResourceType, action.ResourceID, action.Action}, "\x00")
+}
+
+func (s *HistoryStore) lock(policy string) (func(), error) {
+	path, err := s.path(policy)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create optimization state directory: %w", err)
+	}
+	return lockHistoryFile(path + ".lock")
 }
 
 func validateHistoryEntry(entry HistoryEntry) error {
@@ -183,8 +415,9 @@ func (s *HistoryStore) loadLocked(policy string) (History, error) {
 	if err := decoder.Decode(&history); err != nil {
 		return History{}, fmt.Errorf("decode optimization history: %w", err)
 	}
-	if len(history.Entries) > maxHistoryEntries {
-		history.Entries = append([]HistoryEntry(nil), history.Entries[len(history.Entries)-maxHistoryEntries:]...)
+	history.Entries, err = boundHistoryEntries(history.Entries)
+	if err != nil {
+		return History{}, fmt.Errorf("bound optimization history: %w", err)
 	}
 	return history, nil
 }
@@ -224,7 +457,7 @@ func (s *HistoryStore) writeLocked(policy string, history History) error {
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close optimization history: %w", err)
 	}
-	if err := os.Rename(temporaryPath, path); err != nil {
+	if err := replaceHistoryFile(temporaryPath, path); err != nil {
 		return fmt.Errorf("replace optimization history: %w", err)
 	}
 	return nil

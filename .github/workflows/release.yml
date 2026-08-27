@@ -107,8 +107,60 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+  homebrew:
+    needs: [verify, binaries]
+    runs-on: macos-15
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: Download release formula
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/homebrew"
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern apple-ads-mcp.rb \
+            --dir "$RUNNER_TEMP/homebrew"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify formula in the tap
+        shell: bash
+        run: |
+          FORMULA="$RUNNER_TEMP/homebrew/apple-ads-mcp.rb"
+          ruby -c "$FORMULA"
+          brew tap zelentsov-dev/tap
+          TAP_REPOSITORY="$(brew --repository zelentsov-dev/tap)"
+          cp "$FORMULA" "$TAP_REPOSITORY/Formula/apple-ads-mcp.rb"
+          brew style zelentsov-dev/tap/apple-ads-mcp
+          brew audit --strict --online zelentsov-dev/tap/apple-ads-mcp
+          brew install zelentsov-dev/tap/apple-ads-mcp
+          brew test zelentsov-dev/tap/apple-ads-mcp
+          test "$("$(brew --prefix)/bin/apple-ads-mcp" version)" = "${{ needs.verify.outputs.version }}"
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish formula to the tap
+        shell: bash
+        run: |
+          FORMULA="$RUNNER_TEMP/homebrew/apple-ads-mcp.rb"
+          API_PATH="repos/zelentsov-dev/homebrew-tap/contents/Formula/apple-ads-mcp.rb"
+          CURRENT_SHA="$(gh api "$API_PATH" --jq .sha)"
+          gh api "$API_PATH" --jq .content | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/current-formula.rb"
+          if cmp -s "$FORMULA" "$RUNNER_TEMP/current-formula.rb"; then
+            exit 0
+          fi
+          jq -n \
+            --arg message "apple-ads-mcp ${{ needs.verify.outputs.version }}" \
+            --arg content "$(base64 < "$FORMULA" | tr -d '\n')" \
+            --arg sha "$CURRENT_SHA" \
+            '{message: $message, content: $content, sha: $sha, branch: "main"}' \
+            > "$RUNNER_TEMP/homebrew-update.json"
+          gh api --method PUT "$API_PATH" --input "$RUNNER_TEMP/homebrew-update.json"
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
   registry:
-    needs: [verify, binaries, container]
+    needs: [verify, binaries, container, homebrew]
     permissions:
       contents: read
       id-token: write

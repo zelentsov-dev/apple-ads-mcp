@@ -51,11 +51,11 @@ release:
   mode: replace
   make_latest: true
   header: |
-    Apple Ads MCP {{ .Tag }} is a corrective safety release for the local-first App Store campaign operator built on Apple Ads Platform API v1.
+    Apple Ads MCP {{ .Tag }} adds one-command Homebrew installation through `zelentsov-dev/tap` and a complete setup path for Codex, Claude Code, and other stdio MCP clients.
 
-    It adds crash-durable optimization intent storage, restart-safe receipt reconciliation, reconciliation-aware cooldowns, strict handling of partially empty report metrics, an independent mandatory `maxBid`, and direct-ID create verification. Ambiguous creates without an Apple-returned ID remain inconclusive. Policies with bid changes must be migrated to include a positive currency-matched `maxBid`.
+    The release does not change MCP tool names or schemas. It keeps the v0.3.1 optimizer hardening, including crash-durable write intent storage, restart-safe receipt reconciliation, strict report evidence, independent bid caps, and direct-ID create verification.
 
-    Existing v0.2.1 and v0.3 tool names remain available. The server remains read-only by default, has no scheduler, never retries ambiguous mutations, keeps billing PII local, and never exposes a raw HTTP passthrough. Known upstream errors from phrase/category suggestions and impression share remain visible as structured Apple errors and are not reported as successful responses.
+    The server remains read-only by default, has no scheduler, never retries ambiguous mutations, keeps billing PII local, and never exposes a raw HTTP passthrough. Known upstream errors from phrase/category suggestions and impression share remain visible as structured Apple errors and are not reported as successful responses.
   footer: |
     Archives include SHA-256 checksums and SPDX SBOMs. See the README for installation, Apple Ads onboarding, safety controls, and known platform behavior.
 

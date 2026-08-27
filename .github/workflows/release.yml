@@ -134,7 +134,7 @@ jobs:
           cp "$FORMULA" "$TAP_REPOSITORY/Formula/apple-ads-mcp.rb"
           brew style zelentsov-dev/tap/apple-ads-mcp
           brew audit --strict --online zelentsov-dev/tap/apple-ads-mcp
-          brew install zelentsov-dev/tap/apple-ads-mcp
+          brew install --formula "$TAP_REPOSITORY/Formula/apple-ads-mcp.rb"
           brew test zelentsov-dev/tap/apple-ads-mcp
           test "$("$(brew --prefix)/bin/apple-ads-mcp" version)" = "${{ needs.verify.outputs.version }}"
         env:

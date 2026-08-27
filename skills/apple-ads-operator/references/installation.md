@@ -24,7 +24,6 @@ Windows users should download the matching ZIP and `checksums.txt` from GitHub R
 Codex global configuration:
 
 ```bash
-codex mcp remove apple-ads 2>/dev/null || true
 codex mcp add apple-ads -- "$APPLE_ADS_MCP_BIN" serve --stdio
 codex mcp list
 ```
@@ -32,12 +31,11 @@ codex mcp list
 Claude Code user configuration:
 
 ```bash
-claude mcp remove apple-ads --scope user 2>/dev/null || true
 claude mcp add --scope user apple-ads -- "$APPLE_ADS_MCP_BIN" serve --stdio
 claude mcp get apple-ads
 ```
 
-Restart an already running desktop app, CLI session, or IDE extension after changing MCP configuration. A project-scoped `.mcp.json` may also require explicit workspace/server approval in the client.
+If `apple-ads` already exists, inspect its current command, arguments, scope, and environment before replacing it. Remove only the intended entry and only after the user approves losing that configuration. Restart an already running desktop app, CLI session, or IDE extension after changing MCP configuration. A project-scoped `.mcp.json` may also require explicit workspace/server approval in the client.
 
 ## Verify safely
 

@@ -24,6 +24,8 @@ def main() -> None:
     server = (ROOT / "internal/mcpserver/server.go").read_text()
     dockerfile = (ROOT / "Dockerfile").read_text()
     goreleaser = (ROOT / ".goreleaser.yml").read_text()
+    homebrew_template = (ROOT / "packaging/homebrew/apple-ads-mcp.rb.tmpl").read_text()
+    homebrew_renderer = (ROOT / "scripts/render_homebrew_formula.py").read_text()
     release_workflow = (ROOT / ".github/workflows/release.yml").read_text()
     registry_workflow = (ROOT / ".github/workflows/registry-publish.yml").read_text()
     version = plugin["version"]
@@ -43,17 +45,27 @@ def main() -> None:
     require(f"`v{version}` is the current release" in readme, "README release status mismatch")
     require("release:" in goreleaser and 'name_template: "{{ .Tag }}"' in goreleaser, "GoReleaser release metadata missing")
     require("first public release" not in goreleaser, "GoReleaser still assumes a first public release")
+    archive_name_template = '{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}_{{ .Version }}'
+    require(f'name_template: "{archive_name_template}"' in goreleaser, "release archive version must be the final filename component")
+    checksum_name = 'name = f"apple-ads-mcp_{platform}_{architecture}_{version}.tar.gz"'
+    require(checksum_name in homebrew_renderer, "Homebrew checksum lookup does not match release archive names")
+    require('version "{{VERSION}}"' not in homebrew_template, "Homebrew formula must use URL version detection")
+    for platform in ("darwin", "linux"):
+        for architecture in ("arm64", "amd64"):
+            archive = f"apple-ads-mcp_{platform}_{architecture}_{{{{VERSION}}}}.tar.gz"
+            require(archive in homebrew_template, f"Homebrew URL missing version-final archive {archive}")
     require("go test -race ./..." in release_workflow, "release race test missing")
     require("uses: ./.github/workflows/registry-publish.yml" in release_workflow, "release registry publication missing")
     require("PLUGIN_VERSION" in release_workflow, "release tag is not bound to plugin version")
     require("HOMEBREW_TAP_TOKEN" in release_workflow, "Homebrew tap publication token missing")
     trust_command = "brew trust --formula zelentsov-dev/tap/apple-ads-mcp"
+    version_resolution = "test \"$(brew info --json=v2 zelentsov-dev/tap/apple-ads-mcp | jq --raw-output '.formulae[0].versions.stable')\" = \"${{ needs.verify.outputs.version }}\""
     audit_command = "brew audit --strict --online zelentsov-dev/tap/apple-ads-mcp"
     install_command = 'brew install --formula "$TAP_REPOSITORY/Formula/apple-ads-mcp.rb"'
     test_command = "brew test zelentsov-dev/tap/apple-ads-mcp"
     version_check = 'test "$("$(brew --prefix)/bin/apple-ads-mcp" version)" = "${{ needs.verify.outputs.version }}"'
     publish_step = "- name: Publish formula to the tap"
-    homebrew_gate = [trust_command, audit_command, install_command, test_command, version_check, publish_step]
+    homebrew_gate = [trust_command, version_resolution, audit_command, install_command, test_command, version_check, publish_step]
     require(all(item in release_workflow for item in homebrew_gate), "Homebrew verification chain is incomplete")
     positions = [release_workflow.index(item) for item in homebrew_gate]
     require(positions == sorted(positions), "Homebrew verification chain is out of order")

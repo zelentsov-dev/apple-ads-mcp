@@ -133,6 +133,7 @@ jobs:
           TAP_REPOSITORY="$(brew --repository zelentsov-dev/tap)"
           cp "$FORMULA" "$TAP_REPOSITORY/Formula/apple-ads-mcp.rb"
           brew trust --formula zelentsov-dev/tap/apple-ads-mcp
+          test "$(brew info --json=v2 zelentsov-dev/tap/apple-ads-mcp | jq --raw-output '.formulae[0].versions.stable')" = "${{ needs.verify.outputs.version }}"
           brew style zelentsov-dev/tap/apple-ads-mcp
           brew audit --strict --online zelentsov-dev/tap/apple-ads-mcp
           brew install --formula "$TAP_REPOSITORY/Formula/apple-ads-mcp.rb"

@@ -18,7 +18,7 @@ builds:
       - -X github.com/zelentsov-dev/apple-ads-mcp/internal/mcpserver.Version={{.Version}}
 
 archives:
-  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}_{{ .Version }}"
     formats: [tar.gz]
     format_overrides:
       - goos: windows
@@ -51,9 +51,9 @@ release:
   mode: replace
   make_latest: true
   header: |
-    Apple Ads MCP {{ .Tag }} is a packaging-only release that makes Homebrew verification compatible with Homebrew 6 by trusting only `zelentsov-dev/tap/apple-ads-mcp` before audit and installation.
+    Apple Ads MCP {{ .Tag }} is a packaging-only release that places the semantic version at the end of release archive names so Homebrew cannot infer `64` from the `arm64` suffix.
 
-    The release does not change MCP tool names or schemas. It keeps the v0.3.3 exact-path formula verification, the v0.3.2 one-command Homebrew onboarding path, and the v0.3.1 optimizer hardening.
+    The release does not change MCP tool names or schemas. It keeps the v0.3.4 formula-scoped trust gate for Homebrew 6, the v0.3.3 exact-path formula verification, and the v0.3.2 one-command Homebrew onboarding path. The release gate now verifies Homebrew's resolved formula version before installation. Manual downloads use the new `apple-ads-mcp_<os>_<arch>_<version>` archive names.
 
     The server remains read-only by default, has no scheduler, never retries ambiguous mutations, keeps billing PII local, and never exposes a raw HTTP passthrough. Known upstream errors from phrase/category suggestions and impression share remain visible as structured Apple errors and are not reported as successful responses.
   footer: |

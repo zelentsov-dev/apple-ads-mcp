@@ -1,6 +1,6 @@
 {
   "name": "apple-ads-mcp",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Local-first Apple Ads optimizer and App Store campaign operator with typed, receipt-gated lifecycle management.",
   "author": {
     "name": "Alexey Zelentsov",

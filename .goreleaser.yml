@@ -51,9 +51,9 @@ release:
   mode: replace
   make_latest: true
   header: |
-    Apple Ads MCP {{ .Tag }} is a packaging-only release that verifies the generated Homebrew formula by installing it from its exact tap path before publishing it.
+    Apple Ads MCP {{ .Tag }} is a packaging-only release that makes Homebrew verification compatible with Homebrew 6 by trusting only `zelentsov-dev/tap/apple-ads-mcp` before audit and installation.
 
-    The release does not change MCP tool names or schemas. It keeps the v0.3.2 one-command Homebrew installation and onboarding path, plus the v0.3.1 optimizer hardening, including crash-durable write intent storage, restart-safe receipt reconciliation, strict report evidence, independent bid caps, and direct-ID create verification.
+    The release does not change MCP tool names or schemas. It keeps the v0.3.3 exact-path formula verification, the v0.3.2 one-command Homebrew onboarding path, and the v0.3.1 optimizer hardening.
 
     The server remains read-only by default, has no scheduler, never retries ambiguous mutations, keeps billing PII local, and never exposes a raw HTTP passthrough. Known upstream errors from phrase/category suggestions and impression share remain visible as structured Apple errors and are not reported as successful responses.
   footer: |

@@ -9,6 +9,7 @@ Use the MCP as an operator, not as a raw API explorer.
 
 ## Route the request
 
+- For installation, client registration, or an MCP server that is not visible, read [installation.md](references/installation.md).
 - For account connection or access failures, read [onboarding.md](references/onboarding.md).
 - For selecting tools, filters, and bounded report ranges, read [tool-routing.md](references/tool-routing.md).
 - For keyword research, campaign audits, creation, or optimization, read [campaign-workflows.md](references/campaign-workflows.md).

@@ -25,6 +25,15 @@ The project is independent and is not affiliated with, endorsed by, or sponsored
 - Read operations may retry bounded transient failures. Mutations must not retry after an ambiguous transport failure.
 - Identifiers and decimal money amounts remain strings in public MCP schemas.
 
+## Consumer setup
+
+- Treat `README.md` as the canonical public installation and onboarding guide.
+- Prefer `brew install zelentsov-dev/tap/apple-ads-mcp` on macOS and Linux.
+- Register GUI MCP clients with the absolute Homebrew binary path; do not assume they inherit an interactive shell's `PATH`.
+- The bundled plugin manifest, `.mcp.json`, and skill metadata do not install the executable or grant Apple Ads access by themselves.
+- Never ask a user to paste private-key contents, access tokens, or client secrets into a conversation.
+- Keep setup and connection checks read-only. Do not enable write or delete gates unless the user's current request explicitly authorizes mutations.
+
 ## Development
 
 - Use idiomatic Go and wrap errors with context.

@@ -11,9 +11,52 @@ The server is read-only by default. Credentials stay on your machine, every acco
 
 Apple Ads MCP is independent open-source software. It is not affiliated with, endorsed by, or sponsored by Apple Inc. Apple Ads and App Store are trademarks of Apple Inc.
 
+## Quick start
+
+Install the released binary with Homebrew on macOS or Linux:
+
+```bash
+brew install zelentsov-dev/tap/apple-ads-mcp
+apple-ads-mcp version
+```
+
+Create a local read-only profile. The command stores an absolute private-key path; never paste the private key into a chat, issue, log, or repository:
+
+```bash
+apple-ads-mcp config init
+apple-ads-mcp auth doctor --profile production-read-only
+apple-ads-mcp accounts discover --profile production-read-only
+```
+
+Register the server with an absolute Homebrew path so desktop apps and IDE extensions do not depend on their inherited shell `PATH`.
+
+Codex:
+
+```bash
+codex mcp add apple-ads -- "$(brew --prefix)/bin/apple-ads-mcp" serve --stdio
+codex mcp list
+```
+
+Claude Code:
+
+```bash
+claude mcp add --scope user apple-ads -- "$(brew --prefix)/bin/apple-ads-mcp" serve --stdio
+claude mcp get apple-ads
+```
+
+Restart an already running desktop app, CLI session, or IDE extension, then start a new conversation. A safe first request is:
+
+> Call `server_info`, then run `account_health` for my explicit profile, ad account, and app. Do not enable writes.
+
+Other useful read-only starters:
+
+- “List the apps I can advertise and explain any eligibility gaps.”
+- “Audit my current Apple Ads campaign structure without changing anything.”
+- “Find keyword opportunities and separate Apple evidence from your inferences.”
+
 ## Current release
 
-`v0.3.1` is the current release. It hardens the v0.3 optimizer with crash-durable fail-closed write journaling, restart-safe reconciliation, reconciliation-aware cooldowns, exact completed-day evidence, strict nullable metric parsing, typed paginated reports, independent bid caps, and direct-ID create verification. Existing v0.2 read, research, report, inventory, campaign, bulk keyword, recommendation, preview, apply, and verification tools remain available.
+`v0.3.2` is the current release. It adds one-command Homebrew installation and explicit setup paths for Codex, Claude Code, generic stdio MCP clients, and agent-led onboarding. It does not change MCP tool names or schemas. The v0.3.1 optimizer hardening remains intact, including crash-durable fail-closed write journaling, restart-safe reconciliation, reconciliation-aware cooldowns, exact completed-day evidence, strict nullable metric parsing, typed paginated reports, independent bid caps, and direct-ID create verification.
 
 Optimization is never autonomous: the server has no scheduler and never changes spend in the background. A read-only session can build a baseline and plan. Applying a plan still requires every write gate, an active named policy, one receipt, a fresh report and inventory drift check, and item-level verification.
 
@@ -87,6 +130,27 @@ These boundaries do not weaken the default safety model: unsupported or insuffic
 
 ## Install
 
+| Platform | Homebrew | GitHub archive | OCI image |
+| --- | --- | --- | --- |
+| macOS arm64 / amd64 | Yes | `.tar.gz` | Linux container only |
+| Linux arm64 / amd64 | Yes | `.tar.gz` | Yes |
+| Windows arm64 / amd64 | No | `.zip` | Linux container only |
+
+### Homebrew
+
+The official tap installs a checksum-pinned release binary:
+
+```bash
+brew install zelentsov-dev/tap/apple-ads-mcp
+```
+
+Upgrade later releases with:
+
+```bash
+brew update
+brew upgrade apple-ads-mcp
+```
+
 ### GitHub release
 
 Download the archive for your platform from [GitHub Releases](https://github.com/zelentsov-dev/apple-ads-mcp/releases). Releases include SHA-256 checksums and SPDX SBOMs.
@@ -94,26 +158,19 @@ Download the archive for your platform from [GitHub Releases](https://github.com
 Apple silicon example:
 
 ```bash
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.1/apple-ads-mcp_0.3.1_darwin_arm64.tar.gz
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.1/checksums.txt
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.2/apple-ads-mcp_0.3.2_darwin_arm64.tar.gz
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.2/checksums.txt
 shasum -a 256 -c checksums.txt --ignore-missing
-tar -xzf apple-ads-mcp_0.3.1_darwin_arm64.tar.gz
+tar -xzf apple-ads-mcp_0.3.2_darwin_arm64.tar.gz
 sudo install -m 0755 apple-ads-mcp /usr/local/bin/apple-ads-mcp
 ```
 
-### Homebrew formula
-
-Each release publishes a checksum-pinned formula:
-
-```bash
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.1/apple-ads-mcp.rb
-brew install --formula ./apple-ads-mcp.rb
-```
+Windows users should verify `checksums.txt`, extract the matching ZIP, and register the executable with its absolute path.
 
 ### OCI image
 
 ```bash
-docker pull ghcr.io/zelentsov-dev/apple-ads-mcp:0.3.1
+docker pull ghcr.io/zelentsov-dev/apple-ads-mcp:0.3.2
 ```
 
 The image runs `serve --stdio` by default. Mount `accounts.json` and its referenced private key read-only.
@@ -187,13 +244,33 @@ Configuration precedence is `--config`, `APPLE_ADS_MCP_CONFIG`, the default file
 
 ## Connect an MCP client
 
-Run the stdio server:
+The server uses stdio and writes MCP JSON-RPC only to `stdout`:
 
 ```bash
 apple-ads-mcp serve --stdio
 ```
 
-Generic MCP configuration:
+For clients with a CLI, prefer an absolute binary path.
+
+Codex global configuration:
+
+```bash
+codex mcp add apple-ads -- "$(brew --prefix)/bin/apple-ads-mcp" serve --stdio
+codex mcp list
+```
+
+Codex Desktop, the Codex CLI, and the IDE extension share the same host configuration. Restart an already running client and open a new conversation after adding the server.
+
+Claude Code user configuration:
+
+```bash
+claude mcp add --scope user apple-ads -- "$(brew --prefix)/bin/apple-ads-mcp" serve --stdio
+claude mcp get apple-ads
+```
+
+Claude project configuration can use the repository's `.mcp.json`, but each workspace/server may remain pending until the user approves it. Reconnect from `/mcp` or restart Claude Code after approval.
+
+Generic MCP configuration for clients without a registration command:
 
 ```json
 {
@@ -206,13 +283,30 @@ Generic MCP configuration:
 }
 ```
 
-Claude Code:
+Replace `apple-ads-mcp` with the absolute executable path when the client does not inherit the Homebrew or shell `PATH`. On Apple silicon the default Homebrew path is `/opt/homebrew/bin/apple-ads-mcp`; on Intel macOS it is normally `/usr/local/bin/apple-ads-mcp`.
 
-```bash
-claude mcp add apple-ads -- apple-ads-mcp serve --stdio
-```
+### Plugin and skill bundle
 
-Release archives include the Codex plugin metadata and the `apple-ads-operator` skill.
+Release archives include `.codex-plugin/plugin.json`, `.mcp.json`, and the `apple-ads-operator` skill. These files describe the server and safe operating workflow for compatible plugin loaders, but they do not install the executable, register the MCP server, or grant Apple Ads access by themselves. This repository is not currently distributed through a public Codex plugin marketplace; Homebrew plus client registration is the supported public setup path.
+
+### Verify the connection
+
+After restarting the client, confirm that `apple-ads` is enabled or connected and ask it to call `server_info`. After local credentials are ready, use the explicit profile and account for `auth_check`, `ad_accounts_list`, and `account_health`.
+
+All setup verification must remain read-only. Do not add `--allow-writes`, `--allow-deletes`, `allowWrites`, or `allowDeletes` while troubleshooting installation or authentication.
+
+### Troubleshooting
+
+- **Executable not found:** use `"$(brew --prefix)/bin/apple-ads-mcp"` in the client configuration instead of a bare command.
+- **Server already exists:** remove only that client's existing `apple-ads` entry, then add it again with the absolute path.
+- **Claude shows pending approval:** approve the project MCP server, reconnect from `/mcp`, and start a new conversation.
+- **A running client still lacks tools:** fully restart the desktop app, CLI session, or IDE extension after changing MCP configuration.
+- **Authentication fails:** run `apple-ads-mcp auth doctor --profile <profile>` locally and confirm file permissions and non-secret identifiers; never paste the private key into chat.
+- **Homebrew rejects a downloaded local formula:** install from the trusted tap with `brew install zelentsov-dev/tap/apple-ads-mcp`.
+
+### Agent-led setup
+
+An agent may diagnose and perform installation only with the user's approval. It should verify the binary, use an absolute path, register the intended client scope, restart the client, and stop after read-only health checks. It must never request private-key contents or silently enable mutation gates.
 
 ## Enable writes for one session
 
@@ -292,7 +386,7 @@ The server returns these as bounded structured Apple errors, including whether t
 
 ## Compatibility
 
-v0.3 preserves all v0.2.1 tool names and schemas, then adds optimization, shared-budget mutation, bid-strategy, and lifecycle tools. v0.3.1 adds a required `maxBid` when bid permission is enabled and fail-closed reconciliation rules; see the [v0.3.1 migration notes](docs/MIGRATION-v0.3.1.md). Older clients should also read the [v0.3 notes](docs/MIGRATION-v0.3.md) and [v0.2 notes](docs/MIGRATION-v0.2.md).
+v0.3 preserves all v0.2.1 tool names and schemas, then adds optimization, shared-budget mutation, bid-strategy, and lifecycle tools. v0.3.1 adds a required `maxBid` when bid permission is enabled and fail-closed reconciliation rules; see the [v0.3.1 migration notes](docs/MIGRATION-v0.3.1.md). v0.3.2 changes distribution and onboarding only; it does not change MCP tool names or schemas. Older clients should also read the [v0.3 notes](docs/MIGRATION-v0.3.md) and [v0.2 notes](docs/MIGRATION-v0.2.md).
 
 The public tool schema is not frozen before v1.0. API-family scope and operation status are tracked in the [machine-readable operation matrix](api-contract/operations.json). The official Java client baseline and App Store endpoint inventory are tracked in [upstream-baseline.json](api-contract/upstream-baseline.json).
 

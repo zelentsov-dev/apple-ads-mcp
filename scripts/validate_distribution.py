@@ -46,6 +46,9 @@ def main() -> None:
     require("go test -race ./..." in release_workflow, "release race test missing")
     require("uses: ./.github/workflows/registry-publish.yml" in release_workflow, "release registry publication missing")
     require("PLUGIN_VERSION" in release_workflow, "release tag is not bound to plugin version")
+    require("HOMEBREW_TAP_TOKEN" in release_workflow, "Homebrew tap publication token missing")
+    require("brew audit --strict --online" in release_workflow, "Homebrew audit gate missing")
+    require("repos/zelentsov-dev/homebrew-tap/contents/Formula/apple-ads-mcp.rb" in release_workflow, "Homebrew tap target mismatch")
     require("workflow_call:" in registry_workflow, "registry workflow is not reusable")
     require(f'default: "{version}"' in registry_workflow, "registry workflow default version mismatch")
     require("ref: refs/tags/v${{ inputs.version }}" in registry_workflow, "registry workflow must check out the exact released tag")
@@ -53,8 +56,12 @@ def main() -> None:
     require("name: apple-ads-operator" in skill, "skill frontmatter missing")
     areas = [item["area"] for item in operations["operations"]]
     require(len(areas) == len(set(areas)), "operation areas must be unique")
-    for reference in ["onboarding.md", "tool-routing.md", "campaign-workflows.md", "safety.md"]:
+    for reference in ["installation.md", "onboarding.md", "tool-routing.md", "campaign-workflows.md", "safety.md"]:
         require((ROOT / "skills/apple-ads-operator/references" / reference).is_file(), f"missing {reference}")
+    require("brew install zelentsov-dev/tap/apple-ads-mcp" in readme, "canonical Homebrew install missing")
+    require("codex mcp add apple-ads" in readme, "Codex MCP setup missing")
+    require("claude mcp add --scope user apple-ads" in readme, "Claude user MCP setup missing")
+    require("brew install --formula ./apple-ads-mcp.rb" not in readme, "unsupported local Homebrew formula install remains")
     require((ROOT / "docs/MIGRATION-v0.2.md").is_file(), "v0.2 migration notes missing")
     require((ROOT / "docs/MIGRATION-v0.3.md").is_file(), "v0.3 migration notes missing")
     require((ROOT / "docs/MIGRATION-v0.3.1.md").is_file(), "v0.3.1 migration notes missing")

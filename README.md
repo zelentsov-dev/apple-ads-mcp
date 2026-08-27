@@ -56,7 +56,7 @@ Other useful read-only starters:
 
 ## Current release
 
-`v0.3.4` is the current release. It makes the Homebrew release verifier compatible with Homebrew 6 by trusting only `zelentsov-dev/tap/apple-ads-mcp` before audit and installation. This packaging-only fix does not change MCP tool names or schemas. The exact-path verification from v0.3.3 and the one-command Homebrew onboarding from v0.3.2 remain intact.
+`v0.3.5` is the current release. Its archive names end with the semantic version so Homebrew cannot infer `64` from the `arm64` suffix. This packaging-only fix does not change MCP tool names or schemas. Formula-scoped trust for Homebrew 6 from v0.3.4, exact-path verification from v0.3.3, and one-command onboarding from v0.3.2 remain intact.
 
 Optimization is never autonomous: the server has no scheduler and never changes spend in the background. A read-only session can build a baseline and plan. Applying a plan still requires every write gate, an active named policy, one receipt, a fresh report and inventory drift check, and item-level verification.
 
@@ -158,10 +158,10 @@ Download the archive for your platform from [GitHub Releases](https://github.com
 Apple silicon example:
 
 ```bash
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.4/apple-ads-mcp_0.3.4_darwin_arm64.tar.gz
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.4/checksums.txt
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.5/apple-ads-mcp_darwin_arm64_0.3.5.tar.gz
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.5/checksums.txt
 shasum -a 256 -c checksums.txt --ignore-missing
-tar -xzf apple-ads-mcp_0.3.4_darwin_arm64.tar.gz
+tar -xzf apple-ads-mcp_darwin_arm64_0.3.5.tar.gz
 sudo install -m 0755 apple-ads-mcp /usr/local/bin/apple-ads-mcp
 ```
 
@@ -170,7 +170,7 @@ Windows users should verify `checksums.txt`, extract the matching ZIP, and regis
 ### OCI image
 
 ```bash
-docker pull ghcr.io/zelentsov-dev/apple-ads-mcp:0.3.4
+docker pull ghcr.io/zelentsov-dev/apple-ads-mcp:0.3.5
 ```
 
 The image runs `serve --stdio` by default. Mount `accounts.json` and its referenced private key read-only.
@@ -386,7 +386,7 @@ The server returns these as bounded structured Apple errors, including whether t
 
 ## Compatibility
 
-v0.3 preserves all v0.2.1 tool names and schemas, then adds optimization, shared-budget mutation, bid-strategy, and lifecycle tools. v0.3.1 adds a required `maxBid` when bid permission is enabled and fail-closed reconciliation rules; see the [v0.3.1 migration notes](docs/MIGRATION-v0.3.1.md). v0.3.2 changes distribution and onboarding only. v0.3.3 switches release verification to the exact tap formula path, and v0.3.4 adds formula-scoped trust for Homebrew 6. None of these packaging releases changes MCP tool names or schemas. Older clients should also read the [v0.3 notes](docs/MIGRATION-v0.3.md) and [v0.2 notes](docs/MIGRATION-v0.2.md).
+v0.3 preserves all v0.2.1 tool names and schemas, then adds optimization, shared-budget mutation, bid-strategy, and lifecycle tools. v0.3.1 adds a required `maxBid` when bid permission is enabled and fail-closed reconciliation rules; see the [v0.3.1 migration notes](docs/MIGRATION-v0.3.1.md). v0.3.2 changes distribution and onboarding only. v0.3.3 switches release verification to the exact tap formula path, v0.3.4 adds formula-scoped trust for Homebrew 6, and v0.3.5 disambiguates Homebrew version detection by placing the semantic version at the end of archive names. None of these packaging releases changes MCP tool names or schemas. Older clients should also read the [v0.3 notes](docs/MIGRATION-v0.3.md) and [v0.2 notes](docs/MIGRATION-v0.2.md).
 
 The public tool schema is not frozen before v1.0. API-family scope and operation status are tracked in the [machine-readable operation matrix](api-contract/operations.json). The official Java client baseline and App Store endpoint inventory are tracked in [upstream-baseline.json](api-contract/upstream-baseline.json).
 

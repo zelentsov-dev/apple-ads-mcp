@@ -5,20 +5,20 @@ class AppleAdsMcp < Formula
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v{{VERSION}}/apple-ads-mcp_{{VERSION}}_darwin_arm64.tar.gz"
+      url "https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v{{VERSION}}/apple-ads-mcp_darwin_arm64_{{VERSION}}.tar.gz"
       sha256 "{{DARWIN_ARM64_SHA256}}"
     else
-      url "https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v{{VERSION}}/apple-ads-mcp_{{VERSION}}_darwin_amd64.tar.gz"
+      url "https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v{{VERSION}}/apple-ads-mcp_darwin_amd64_{{VERSION}}.tar.gz"
       sha256 "{{DARWIN_AMD64_SHA256}}"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v{{VERSION}}/apple-ads-mcp_{{VERSION}}_linux_arm64.tar.gz"
+      url "https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v{{VERSION}}/apple-ads-mcp_linux_arm64_{{VERSION}}.tar.gz"
       sha256 "{{LINUX_ARM64_SHA256}}"
     else
-      url "https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v{{VERSION}}/apple-ads-mcp_{{VERSION}}_linux_amd64.tar.gz"
+      url "https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v{{VERSION}}/apple-ads-mcp_linux_amd64_{{VERSION}}.tar.gz"
       sha256 "{{LINUX_AMD64_SHA256}}"
     end
   end

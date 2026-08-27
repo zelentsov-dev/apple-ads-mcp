@@ -12,7 +12,7 @@ on:
       version:
         description: Released semantic version without a v prefix
         required: true
-        default: "0.3.4"
+        default: "0.3.5"
 
 permissions:
   contents: read

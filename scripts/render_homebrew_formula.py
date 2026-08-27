@@ -26,7 +26,7 @@ def main() -> None:
 
 
 def checksum(checksums: dict[str, str], version: str, platform: str, architecture: str) -> str:
-    name = f"apple-ads-mcp_{version}_{platform}_{architecture}.tar.gz"
+    name = f"apple-ads-mcp_{platform}_{architecture}_{version}.tar.gz"
     if name not in checksums:
         raise SystemExit(f"checksum missing for {name}")
     return checksums[name]

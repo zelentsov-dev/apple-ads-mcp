@@ -7,11 +7,11 @@
     "url": "https://github.com/zelentsov-dev/apple-ads-mcp",
     "source": "github"
   },
-  "version": "0.3.3",
+  "version": "0.3.4",
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/zelentsov-dev/apple-ads-mcp:v0.3.3",
+      "identifier": "ghcr.io/zelentsov-dev/apple-ads-mcp:v0.3.4",
       "runtimeHint": "docker",
       "transport": {
         "type": "stdio"

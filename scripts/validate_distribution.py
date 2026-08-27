@@ -47,8 +47,15 @@ def main() -> None:
     require("uses: ./.github/workflows/registry-publish.yml" in release_workflow, "release registry publication missing")
     require("PLUGIN_VERSION" in release_workflow, "release tag is not bound to plugin version")
     require("HOMEBREW_TAP_TOKEN" in release_workflow, "Homebrew tap publication token missing")
+    trust_command = "brew trust --formula zelentsov-dev/tap/apple-ads-mcp"
+    require(trust_command in release_workflow, "formula-scoped Homebrew trust gate missing")
     require("brew audit --strict --online" in release_workflow, "Homebrew audit gate missing")
-    require('brew install --formula "$TAP_REPOSITORY/Formula/apple-ads-mcp.rb"' in release_workflow, "Homebrew install must use the verified tap file")
+    install_command = 'brew install --formula "$TAP_REPOSITORY/Formula/apple-ads-mcp.rb"'
+    require(install_command in release_workflow, "Homebrew install must use the verified tap file")
+    require(
+        release_workflow.index(trust_command) < release_workflow.index("brew audit --strict --online") < release_workflow.index(install_command),
+        "formula trust must precede Homebrew audit and install",
+    )
     require("repos/zelentsov-dev/homebrew-tap/contents/Formula/apple-ads-mcp.rb" in release_workflow, "Homebrew tap target mismatch")
     require("workflow_call:" in registry_workflow, "registry workflow is not reusable")
     require(f'default: "{version}"' in registry_workflow, "registry workflow default version mismatch")

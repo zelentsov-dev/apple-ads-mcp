@@ -241,12 +241,15 @@ type AdGroupTargetingPreviewInput struct {
 
 type KeywordBidPreviewInput struct {
 	AccountInput
-	KeywordID string         `json:"keywordId"`
-	Bid       appleads.Money `json:"bid"`
+	KeywordID  string         `json:"keywordId"`
+	CampaignID string         `json:"campaignId,omitempty" jsonschema:"optional parent campaign assertion"`
+	AdGroupID  string         `json:"adGroupId,omitempty" jsonschema:"optional parent ad group assertion"`
+	Bid        appleads.Money `json:"bid"`
 }
 
 type BulkKeywordCreateItem struct {
-	CorrelationID string          `json:"correlationId"`
+	CorrelationID any             `json:"correlationId" jsonschema:"non-negative Apple bulk correlation ID as a decimal string or integer"`
+	AdGroupID     string          `json:"adGroupId,omitempty" jsonschema:"optional per-item ad group ID overriding the top-level default"`
 	Text          string          `json:"text"`
 	MatchType     string          `json:"matchType"`
 	Bid           *appleads.Money `json:"bid,omitempty"`
@@ -260,7 +263,7 @@ type BulkKeywordCreateInput struct {
 }
 
 type BulkKeywordUpdateItem struct {
-	CorrelationID string          `json:"correlationId"`
+	CorrelationID any             `json:"correlationId" jsonschema:"non-negative Apple bulk correlation ID as a decimal string or integer"`
 	ID            string          `json:"id"`
 	Bid           *appleads.Money `json:"bid,omitempty"`
 	Status        *string         `json:"status,omitempty"`
@@ -273,7 +276,7 @@ type BulkKeywordUpdateInput struct {
 }
 
 type BulkNegativeKeywordCreateItem struct {
-	CorrelationID string `json:"correlationId"`
+	CorrelationID any    `json:"correlationId" jsonschema:"non-negative Apple bulk correlation ID as a decimal string or integer"`
 	Text          string `json:"text"`
 	MatchType     string `json:"matchType"`
 	Status        string `json:"status"`
@@ -287,7 +290,7 @@ type BulkNegativeKeywordCreateInput struct {
 }
 
 type BulkNegativeKeywordUpdateItem struct {
-	CorrelationID string  `json:"correlationId"`
+	CorrelationID any     `json:"correlationId" jsonschema:"non-negative Apple bulk correlation ID as a decimal string or integer"`
 	ID            string  `json:"id"`
 	Status        *string `json:"status,omitempty"`
 }

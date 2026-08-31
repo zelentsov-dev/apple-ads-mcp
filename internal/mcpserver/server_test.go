@@ -2,7 +2,9 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -96,5 +98,46 @@ func TestMCPHandshakeSchemasAndStructuredOutput(t *testing.T) {
 	}
 	if result.IsError || result.StructuredContent == nil || len(result.Content) == 0 {
 		t.Fatalf("unexpected server_info result: %+v", result)
+	}
+}
+
+func TestMCPReadOnlyGateReturnsSameTextAndStructuredDiagnostics(t *testing.T) {
+	ctx := context.Background()
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	server := New(appleads.NewManager(config.Config{}, "none"), false, io.Discard)
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "error-contract-test", Version: "1.0.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{Name: "keyword_create_preview", Arguments: map[string]any{
+		"profile": "owner", "adAccountId": "123",
+		"payload": map[string]any{"adGroupId": "456", "text": "voice notes", "matchType": "EXACT", "status": "PAUSED"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError || result.StructuredContent == nil || len(result.Content) != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+	textContent := result.Content[0].(*mcp.TextContent)
+	var text map[string]any
+	if err := json.Unmarshal([]byte(textContent.Text), &text); err != nil {
+		t.Fatal(err)
+	}
+	structured := result.StructuredContent.(map[string]any)
+	textError := text["error"].(map[string]any)
+	structuredError := structured["error"].(map[string]any)
+	if textError["type"] != "write_gate_error" || textError["message"] != "server is in read-only mode; restart with --allow-writes" {
+		t.Fatalf("text=%+v", text)
+	}
+	if !reflect.DeepEqual(textError, structuredError) {
+		t.Fatalf("text error=%v structured error=%v", textError, structuredError)
 	}
 }

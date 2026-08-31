@@ -86,6 +86,7 @@ def main() -> None:
     require((ROOT / "docs/MIGRATION-v0.2.md").is_file(), "v0.2 migration notes missing")
     require((ROOT / "docs/MIGRATION-v0.3.md").is_file(), "v0.3 migration notes missing")
     require((ROOT / "docs/MIGRATION-v0.3.1.md").is_file(), "v0.3.1 migration notes missing")
+    require((ROOT / "docs/MIGRATION-v0.3.6.md").is_file(), "v0.3.6 migration notes missing")
     require("optimization-read" in areas and "optimization-apply" in areas, "optimization operation coverage missing")
     require("resource-lifecycle" in areas and "shared-budgets" in areas, "v0.3 lifecycle coverage missing")
     lifecycle = next(item for item in operations["operations"] if item["area"] == "resource-lifecycle")

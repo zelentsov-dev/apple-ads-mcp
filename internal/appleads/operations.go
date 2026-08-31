@@ -1,6 +1,7 @@
 package appleads
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,15 @@ func (o Operation) Method() string        { return o.method }
 func (o Operation) Path() string          { return o.path }
 func (o Operation) IsMutation() bool      { return o.mutation }
 func (o Operation) RequiresAccount() bool { return o.scoped }
+
+func (o Operation) VerificationScopeKey() (string, error) {
+	body, err := json.Marshal(o.body)
+	if err != nil {
+		return "", fmt.Errorf("encode verification scope: %w", err)
+	}
+	value := o.method + "\x00" + o.path + "\x00" + o.query.Encode() + "\x00" + string(body)
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(value))), nil
+}
 
 func (o Operation) EncodedBodySize() (int, error) {
 	data, err := json.Marshal(o.body)

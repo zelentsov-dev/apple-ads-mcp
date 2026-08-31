@@ -55,6 +55,7 @@ type OperationItemPreview struct {
 	CorrelationID string         `json:"correlationId"`
 	CampaignID    string         `json:"campaignId,omitempty"`
 	ResourceType  string         `json:"resourceType,omitempty"`
+	Resource      string         `json:"resource,omitempty"`
 	Action        string         `json:"action,omitempty"`
 	Reason        string         `json:"reason,omitempty"`
 	TargetID      string         `json:"targetId,omitempty"`
@@ -114,9 +115,11 @@ type RecoveryItem struct {
 }
 
 type VerificationRead struct {
-	Name          string
-	Operation     appleads.Operation
-	ExpectDeleted bool
+	Name            string
+	Operation       appleads.Operation
+	ExpectDeleted   bool
+	RequireComplete bool
+	Scopes          []string
 }
 
 type PreviewOptions struct {
@@ -138,6 +141,7 @@ type SequenceStep struct {
 type record struct {
 	preview  OperationPreview
 	verify   []VerificationRead
+	scopes   map[string]uint64
 	mutation appleads.Operation
 	sequence []SequenceStep
 	create   *CreateExpectation
@@ -146,27 +150,42 @@ type record struct {
 	size     int
 }
 
+type scopeState struct {
+	generation uint64
+	references int
+	reservedBy string
+}
+
 type Store struct {
-	mu      sync.Mutex
-	records map[string]*record
-	now     func() time.Time
-	ttl     time.Duration
-	total   int
+	mu         sync.Mutex
+	records    map[string]*record
+	tombstones map[string]time.Time
+	scopes     map[string]*scopeState
+	now        func() time.Time
+	ttl        time.Duration
+	total      int
 }
 
 const (
-	maxStoredReceipts    = 1000
-	maxStoredReceiptData = 32 << 20
+	maxStoredReceiptStates = 1000
+	maxStoredReceiptData   = 32 << 20
+	receiptTombstoneTTL    = time.Hour
 )
 
-var ErrReceiptNotFound = errors.New("receipt not found")
+var (
+	ErrReceiptNotFound        = errors.New("receipt not found")
+	ErrReceiptExpired         = errors.New("receipt has expired")
+	ErrReceiptUsed            = errors.New("receipt has already been used")
+	ErrStateDrift             = errors.New("current state drifted after preview; create a new preview")
+	ErrVerificationIncomplete = errors.New("verification inventory is incomplete")
+)
 
 func NewStore() *Store {
-	return &Store{records: make(map[string]*record), now: time.Now, ttl: 10 * time.Minute}
+	return &Store{records: make(map[string]*record), tombstones: make(map[string]time.Time), scopes: make(map[string]*scopeState), now: time.Now, ttl: 10 * time.Minute}
 }
 
 func NewStoreForTest(now func() time.Time, ttl time.Duration) *Store {
-	return &Store{records: make(map[string]*record), now: now, ttl: ttl}
+	return &Store{records: make(map[string]*record), tombstones: make(map[string]time.Time), scopes: make(map[string]*scopeState), now: now, ttl: ttl}
 }
 
 func (s *Store) Preview(ctx context.Context, executor Executor, profile, adAccountID, name string, targetIDs []string, payload map[string]any, verify, mutation appleads.Operation) (OperationPreview, error) {
@@ -180,11 +199,28 @@ func (s *Store) PreviewComposite(ctx context.Context, executor Executor, profile
 	if len(verify) == 0 {
 		return OperationPreview{}, errors.New("preview requires at least one verification read")
 	}
-	current, _, err := readVerificationState(ctx, executor, profile, adAccountID, verify)
+	scopeKeys, err := verificationScopeKeys(adAccountID, targetIDs, verify)
+	if err != nil {
+		return OperationPreview{}, err
+	}
+	s.mu.Lock()
+	s.pruneExpiredLocked()
+	if len(s.records)+len(s.tombstones) >= maxStoredReceiptStates {
+		s.mu.Unlock()
+		return OperationPreview{}, errors.New("receipt capacity reached; wait for existing previews or expired receipt tombstones to expire")
+	}
+	if !s.scopesAvailableLocked(scopeKeys) {
+		s.mu.Unlock()
+		return OperationPreview{}, ErrStateDrift
+	}
+	scopeGenerations := s.scopeGenerationsLocked(scopeKeys)
+	s.mu.Unlock()
+
+	hashState, current, _, err := readVerificationState(ctx, executor, profile, adAccountID, verify, true)
 	if err != nil {
 		return OperationPreview{}, fmt.Errorf("read current state: %w", err)
 	}
-	currentHash, err := valueHash(current)
+	currentHash, err := valueHash(hashState)
 	if err != nil {
 		return OperationPreview{}, err
 	}
@@ -192,7 +228,7 @@ func (s *Store) PreviewComposite(ctx context.Context, executor Executor, profile
 	if err != nil {
 		return OperationPreview{}, err
 	}
-	currentData, err := json.Marshal(current)
+	currentData, err := json.Marshal(hashState)
 	if err != nil {
 		return OperationPreview{}, fmt.Errorf("size operation state: %w", err)
 	}
@@ -227,11 +263,16 @@ func (s *Store) PreviewComposite(ctx context.Context, executor Executor, profile
 	}
 	s.mu.Lock()
 	s.pruneExpiredLocked()
-	if len(s.records) >= maxStoredReceipts || recordSize > maxStoredReceiptData-s.total {
+	if !s.scopeGenerationsMatchLocked(scopeGenerations) || !s.scopesAvailableLocked(scopeKeys) {
 		s.mu.Unlock()
-		return OperationPreview{}, errors.New("receipt capacity reached; wait for existing previews to expire")
+		return OperationPreview{}, ErrStateDrift
 	}
-	s.records[receipt] = &record{preview: preview, verify: append([]VerificationRead(nil), verify...), mutation: mutation, create: cloneCreateExpectation(options.Create), size: recordSize}
+	if len(s.records)+len(s.tombstones) >= maxStoredReceiptStates || recordSize > maxStoredReceiptData-s.total {
+		s.mu.Unlock()
+		return OperationPreview{}, errors.New("receipt capacity reached; wait for existing previews or expired receipt tombstones to expire")
+	}
+	s.retainScopesLocked(scopeGenerations)
+	s.records[receipt] = &record{preview: preview, verify: append([]VerificationRead(nil), verify...), scopes: scopeGenerations, mutation: mutation, create: cloneCreateExpectation(options.Create), size: recordSize}
 	s.total += recordSize
 	s.mu.Unlock()
 	return preview, nil
@@ -292,8 +333,7 @@ func (s *Store) PreviewSequence(ctx context.Context, executor Executor, profile,
 	s.mu.Lock()
 	if item, exists := s.records[preview.Receipt]; exists {
 		if sequenceSize > maxStoredReceiptData-s.total {
-			s.total -= item.size
-			delete(s.records, preview.Receipt)
+			s.deleteRecordLocked(preview.Receipt, item)
 			s.mu.Unlock()
 			return OperationPreview{}, errors.New("receipt capacity reached; sequence payload is too large")
 		}
@@ -307,13 +347,190 @@ func (s *Store) PreviewSequence(ctx context.Context, executor Executor, profile,
 
 func (s *Store) pruneExpiredLocked() {
 	now := s.now()
+	for receipt, expiredAt := range s.tombstones {
+		if !now.Before(expiredAt.Add(receiptTombstoneTTL)) {
+			delete(s.tombstones, receipt)
+		}
+	}
 	for receipt, item := range s.records {
 		expiresAt, err := time.Parse(time.RFC3339, item.preview.ExpiresAt)
 		if err != nil || !now.Before(expiresAt) {
-			s.total -= item.size
-			delete(s.records, receipt)
+			s.deleteRecordLocked(receipt, item)
+			s.addExpiredTombstoneLocked(receipt, now)
 		}
 	}
+}
+
+func (s *Store) addExpiredTombstoneLocked(receipt string, expiredAt time.Time) {
+	if s.tombstones == nil {
+		s.tombstones = make(map[string]time.Time)
+	}
+	s.tombstones[receipt] = expiredAt
+}
+
+func (s *Store) deleteRecordLocked(receipt string, item *record) {
+	s.total -= item.size
+	delete(s.records, receipt)
+	s.clearScopesReservationLocked(item.scopes, receipt)
+	s.releaseScopesLocked(item.scopes)
+}
+
+func verificationScopeKeys(adAccountID string, targetIDs []string, reads []VerificationRead) ([]string, error) {
+	seen := make(map[string]struct{}, len(reads)+len(targetIDs))
+	keys := make([]string, 0, len(reads)+len(targetIDs))
+	for _, targetID := range targetIDs {
+		targetID = strings.TrimSpace(targetID)
+		if targetID == "" {
+			continue
+		}
+		key := adAccountID + "\x00semantic\x00" + ObjectMutationScope(targetID)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	for _, read := range reads {
+		if read.Operation.IsMutation() {
+			return nil, errors.New("verification scope requires read operations")
+		}
+		if len(read.Scopes) > 0 {
+			for _, scope := range read.Scopes {
+				scope = strings.TrimSpace(scope)
+				if scope == "" {
+					return nil, errors.New("verification scope must not be empty")
+				}
+				key := adAccountID + "\x00semantic\x00" + scope
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+				keys = append(keys, key)
+			}
+		}
+		fingerprint, err := read.Operation.VerificationScopeKey()
+		if err != nil {
+			return nil, err
+		}
+		key := adAccountID + "\x00read\x00" + fingerprint
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys, nil
+}
+
+func MutationScope(parts ...string) string {
+	encoded, _ := json.Marshal(parts)
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
+}
+
+func ObjectMutationScope(id string) string {
+	return MutationScope("object", strings.TrimSpace(id))
+}
+
+func (s *Store) scopeGenerationsLocked(keys []string) map[string]uint64 {
+	result := make(map[string]uint64, len(keys))
+	for _, key := range keys {
+		if state := s.scopes[key]; state != nil {
+			result[key] = state.generation
+			continue
+		}
+		result[key] = 0
+	}
+	return result
+}
+
+func (s *Store) scopeGenerationsMatchLocked(expected map[string]uint64) bool {
+	for key, generation := range expected {
+		current := uint64(0)
+		if state := s.scopes[key]; state != nil {
+			current = state.generation
+		}
+		if current != generation {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Store) scopesAvailableLocked(keys []string) bool {
+	for _, key := range keys {
+		if state := s.scopes[key]; state != nil && state.reservedBy != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Store) retainScopesLocked(scopes map[string]uint64) {
+	if s.scopes == nil {
+		s.scopes = make(map[string]*scopeState)
+	}
+	for key, generation := range scopes {
+		state := s.scopes[key]
+		if state == nil {
+			state = &scopeState{generation: generation}
+			s.scopes[key] = state
+		}
+		state.references++
+	}
+}
+
+func (s *Store) releaseScopesLocked(scopes map[string]uint64) {
+	for key := range scopes {
+		state := s.scopes[key]
+		if state == nil {
+			continue
+		}
+		state.references--
+		if state.references == 0 {
+			delete(s.scopes, key)
+		}
+	}
+}
+
+func (s *Store) reserveScopesLocked(expected map[string]uint64, receipt string) bool {
+	if !s.scopeGenerationsMatchLocked(expected) {
+		return false
+	}
+	for key := range expected {
+		state := s.scopes[key]
+		if state == nil || state.reservedBy != "" {
+			return false
+		}
+	}
+	for key := range expected {
+		state := s.scopes[key]
+		state.generation++
+		state.reservedBy = receipt
+	}
+	return true
+}
+
+func (s *Store) clearScopesReservationLocked(scopes map[string]uint64, receipt string) {
+	for key := range scopes {
+		if state := s.scopes[key]; state != nil && state.reservedBy == receipt {
+			state.reservedBy = ""
+		}
+	}
+}
+
+func (s *Store) clearReceiptReservation(record *record, receipt string) {
+	s.mu.Lock()
+	s.clearScopesReservationLocked(record.scopes, receipt)
+	s.mu.Unlock()
+}
+
+func (s *Store) missingReceiptErrorLocked(receipt string) error {
+	if _, expired := s.tombstones[receipt]; expired {
+		return ErrReceiptExpired
+	}
+	return ErrReceiptNotFound
 }
 
 func (s *Store) Apply(ctx context.Context, executor Executor, receipt string) (OperationReceipt, error) {
@@ -322,19 +539,27 @@ func (s *Store) Apply(ctx context.Context, executor Executor, receipt string) (O
 
 func (s *Store) ApplyWithPreflight(ctx context.Context, executor Executor, receipt string, preflight func(OperationPreview) error) (OperationReceipt, error) {
 	s.mu.Lock()
+	s.pruneExpiredLocked()
 	record, ok := s.records[receipt]
 	if !ok {
+		err := s.missingReceiptErrorLocked(receipt)
 		s.mu.Unlock()
-		return OperationReceipt{}, ErrReceiptNotFound
+		return OperationReceipt{}, err
 	}
 	if record.used {
 		s.mu.Unlock()
-		return OperationReceipt{}, errors.New("receipt has already been used")
+		return OperationReceipt{}, ErrReceiptUsed
+	}
+	if !s.scopeGenerationsMatchLocked(record.scopes) {
+		s.mu.Unlock()
+		return OperationReceipt{}, ErrStateDrift
 	}
 	expiresAt, err := time.Parse(time.RFC3339, record.preview.ExpiresAt)
 	if err != nil || !s.now().Before(expiresAt) {
+		s.deleteRecordLocked(receipt, record)
+		s.addExpiredTombstoneLocked(receipt, s.now())
 		s.mu.Unlock()
-		return OperationReceipt{}, errors.New("receipt has expired")
+		return OperationReceipt{}, ErrReceiptExpired
 	}
 	if deadline, ok := ctx.Deadline(); !ok || expiresAt.Before(deadline) {
 		var cancel context.CancelFunc
@@ -347,8 +572,11 @@ func (s *Store) ApplyWithPreflight(ctx context.Context, executor Executor, recei
 	sequence := append([]SequenceStep(nil), record.sequence...)
 	s.mu.Unlock()
 
-	current, _, err := readVerificationState(ctx, executor, preview.Profile, preview.AdAccountID, verify)
+	current, _, _, err := readVerificationState(ctx, executor, preview.Profile, preview.AdAccountID, verify, true)
 	if err != nil {
+		if errors.Is(err, ErrVerificationIncomplete) {
+			return OperationReceipt{}, ErrStateDrift
+		}
 		return OperationReceipt{}, fmt.Errorf("re-read current state: %w", err)
 	}
 	currentHash, err := valueHash(current)
@@ -356,22 +584,35 @@ func (s *Store) ApplyWithPreflight(ctx context.Context, executor Executor, recei
 		return OperationReceipt{}, err
 	}
 	if currentHash != preview.CurrentHash {
-		return OperationReceipt{}, errors.New("current state drifted after preview; create a new preview")
+		return OperationReceipt{}, ErrStateDrift
 	}
 
 	s.mu.Lock()
+	currentRecord, exists := s.records[receipt]
+	if !exists || currentRecord != record {
+		err := s.missingReceiptErrorLocked(receipt)
+		s.mu.Unlock()
+		return OperationReceipt{}, err
+	}
 	if record.used {
 		s.mu.Unlock()
-		return OperationReceipt{}, errors.New("receipt has already been used")
+		return OperationReceipt{}, ErrReceiptUsed
 	}
 	if !s.now().Before(expiresAt) {
+		s.deleteRecordLocked(receipt, record)
+		s.addExpiredTombstoneLocked(receipt, s.now())
 		s.mu.Unlock()
-		return OperationReceipt{}, errors.New("receipt has expired")
+		return OperationReceipt{}, ErrReceiptExpired
+	}
+	if !s.reserveScopesLocked(record.scopes, receipt) {
+		s.mu.Unlock()
+		return OperationReceipt{}, ErrStateDrift
 	}
 	record.used = true
 	s.mu.Unlock()
 	if preflight != nil {
 		if err := preflight(preview); err != nil {
+			s.clearReceiptReservation(record, receipt)
 			return OperationReceipt{}, fmt.Errorf("persist write intent: %w", err)
 		}
 	}
@@ -379,6 +620,9 @@ func (s *Store) ApplyWithPreflight(ctx context.Context, executor Executor, recei
 	if len(sequence) > 0 {
 		result := s.applySequence(ctx, executor, receipt, preview, sequence)
 		s.storeOutcomes(record, result.Items)
+		if result.Status != "unknown" {
+			s.clearReceiptReservation(record, receipt)
+		}
 		return result, nil
 	}
 	result, err := executor.Do(ctx, preview.Profile, preview.AdAccountID, mutation)
@@ -398,8 +642,10 @@ func (s *Store) ApplyWithPreflight(ctx context.Context, executor Executor, recei
 			s.storeOutcomes(record, receiptResult.Items)
 			return receiptResult, nil
 		}
+		s.clearReceiptReservation(record, receipt)
 		return OperationReceipt{}, err
 	}
+	s.clearReceiptReservation(record, receipt)
 	receiptResult.Items = resultItemStatuses(result.Data, preview.Items)
 	s.storeOutcomes(record, receiptResult.Items)
 	if len(receiptResult.Items) > 0 {
@@ -409,6 +655,11 @@ func (s *Store) ApplyWithPreflight(ctx context.Context, executor Executor, recei
 			if index < len(receiptResult.Items) && receiptResult.Items[index].TargetID != "" {
 				record.preview.Items[index].TargetID = receiptResult.Items[index].TargetID
 				targetIDs = append(targetIDs, receiptResult.Items[index].TargetID)
+				if resource := record.preview.Items[index].Resource; resource != "" {
+					if read, readErr := appleads.ResourceGet(resource, receiptResult.Items[index].TargetID); readErr == nil {
+						record.verify = appendVerificationRead(record.verify, VerificationRead{Name: "direct_item_" + record.preview.Items[index].CorrelationID, Operation: read})
+					}
+				}
 			}
 		}
 		if len(targetIDs) > 0 {
@@ -520,9 +771,10 @@ func containsItemStatus(items []OperationItemStatus, status string) bool {
 func (s *Store) Inspect(receipt string) (OperationPreview, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pruneExpiredLocked()
 	record, ok := s.records[receipt]
 	if !ok {
-		return OperationPreview{}, false, ErrReceiptNotFound
+		return OperationPreview{}, false, s.missingReceiptErrorLocked(receipt)
 	}
 	return record.preview, record.used, nil
 }
@@ -531,8 +783,9 @@ func (s *Store) Verify(ctx context.Context, executor Executor, receipt string) (
 	s.mu.Lock()
 	record, ok := s.records[receipt]
 	if !ok {
+		err := s.missingReceiptErrorLocked(receipt)
 		s.mu.Unlock()
-		return OperationVerification{}, ErrReceiptNotFound
+		return OperationVerification{}, err
 	}
 	preview := record.preview
 	verify := record.verify
@@ -540,11 +793,11 @@ func (s *Store) Verify(ctx context.Context, executor Executor, receipt string) (
 	outcomes := cloneStringMap(record.outcomes)
 	used := record.used
 	s.mu.Unlock()
-	current, objects, err := readVerificationState(ctx, executor, preview.Profile, preview.AdAccountID, verify)
+	hashState, current, objects, err := readVerificationState(ctx, executor, preview.Profile, preview.AdAccountID, verify, false)
 	if err != nil {
 		return OperationVerification{}, fmt.Errorf("read current state for verification: %w", err)
 	}
-	hash, err := valueHash(current)
+	hash, err := valueHash(hashState)
 	if err != nil {
 		return OperationVerification{}, err
 	}
@@ -822,8 +1075,9 @@ func matchesExpectedSubset(current any, expected map[string]any) bool {
 	return true
 }
 
-func readVerificationState(ctx context.Context, executor Executor, profile, adAccountID string, reads []VerificationRead) (any, []ObjectVerification, error) {
-	values := make(map[string]any, len(reads))
+func readVerificationState(ctx context.Context, executor Executor, profile, adAccountID string, reads []VerificationRead, requireComplete bool) (any, any, []ObjectVerification, error) {
+	hashValues := make(map[string]any, len(reads))
+	currentValues := make(map[string]any, len(reads))
 	objects := make([]ObjectVerification, 0, len(reads))
 	firstName := ""
 	for index, read := range reads {
@@ -831,8 +1085,8 @@ func readVerificationState(ctx context.Context, executor Executor, profile, adAc
 		if name == "" {
 			name = fmt.Sprintf("object_%d", index+1)
 		}
-		if _, exists := values[name]; exists {
-			return nil, nil, fmt.Errorf("duplicate verification read name %q", name)
+		if _, exists := hashValues[name]; exists {
+			return nil, nil, nil, fmt.Errorf("duplicate verification read name %q", name)
 		}
 		if index == 0 {
 			firstName = name
@@ -842,19 +1096,65 @@ func readVerificationState(ctx context.Context, executor Executor, profile, adAc
 			var apiError *appleads.APIError
 			if read.ExpectDeleted && errors.As(err, &apiError) && apiError.HTTPStatus == 404 {
 				deleted := map[string]any{"deleted": true}
-				values[name] = deleted
+				hashValues[name] = verificationHashValue(deleted, appleads.Pagination{})
+				currentValues[name] = deleted
 				objects = append(objects, ObjectVerification{Name: name, Status: "deleted", Current: deleted})
 				continue
 			}
-			return nil, nil, fmt.Errorf("read %s: %w", name, err)
+			return nil, nil, nil, fmt.Errorf("read %s: %w", name, err)
 		}
-		values[name] = result.Data
+		if requireComplete && read.RequireComplete && !verificationResultComplete(result) {
+			return nil, nil, nil, fmt.Errorf("read %s: %w", name, ErrVerificationIncomplete)
+		}
+		hashValues[name] = verificationHashValue(result.Data, result.Pagination)
+		currentValues[name] = result.Data
 		objects = append(objects, ObjectVerification{Name: name, Status: "read", Current: result.Data})
 	}
 	if len(reads) == 1 {
-		return values[firstName], objects, nil
+		return hashValues[firstName], currentValues[firstName], objects, nil
 	}
-	return values, objects, nil
+	return hashValues, currentValues, objects, nil
+}
+
+func verificationHashValue(data any, pagination appleads.Pagination) map[string]any {
+	return map[string]any{
+		"data": data,
+		"pagination": map[string]any{
+			"offset":       pagination.Offset,
+			"pageSize":     pagination.PageSize,
+			"totalResults": pagination.Total,
+			"next":         pagination.Next,
+		},
+	}
+}
+
+func verificationResultComplete(result appleads.Result) bool {
+	if result.Pagination.Offset != 0 || result.Pagination.Next != "" {
+		return false
+	}
+	count, ok := verificationCollectionSize(result.Data)
+	if !ok {
+		return false
+	}
+	return result.Pagination.Total == count
+}
+
+func verificationCollectionSize(value any) (int, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return 0, true
+	case []any:
+		return len(typed), true
+	case map[string]any:
+		for _, key := range []string{"items", "result", "data"} {
+			if nested, exists := typed[key]; exists {
+				return verificationCollectionSize(nested)
+			}
+		}
+		return 0, false
+	default:
+		return 0, false
+	}
 }
 
 func unknownItemStatuses(items []OperationItemPreview) []OperationItemStatus {
@@ -889,10 +1189,10 @@ func walkResultItems(value any, statuses map[string]OperationItemStatus) {
 			current.TargetID = firstNonEmpty(current.TargetID, fmt.Sprint(typed["id"]), findResultID(typed["result"]), findResultID(typed["data"]))
 			if failure, exists := typed["error"]; exists && failure != nil {
 				current.Status = "failed"
-				current.Error = failure
+				current.Error = publicBulkError(failure)
 			} else if failures, exists := typed["errors"]; exists && failures != nil {
 				current.Status = "failed"
-				current.Error = failures
+				current.Error = publicBulkError(failures)
 			} else if success, exists := typed["success"].(bool); exists && !success {
 				current.Status = "failed"
 				current.Error = "Apple returned success=false"
@@ -1105,12 +1405,104 @@ func redactPrivateData(value any) any {
 			if privateDataKey(key) {
 				continue
 			}
+			normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(key))
+			if normalized == "error" || normalized == "errors" {
+				if item == nil {
+					result[key] = nil
+					continue
+				}
+				result[key] = publicBulkError(item)
+				continue
+			}
 			result[key] = redactPrivateData(item)
 		}
 		return result
 	default:
 		return value
 	}
+}
+
+func publicBulkError(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		result := map[string]any{}
+		for _, key := range []string{"code", "errorCode", "message"} {
+			if text, ok := typed[key].(string); ok {
+				limit := 1024
+				if key != "message" {
+					limit = 128
+				}
+				if text = boundedErrorText(text, limit); text != "" {
+					result[key] = text
+				}
+			}
+		}
+		if info, ok := typed["info"].(map[string]any); ok {
+			safeInfo := map[string]any{}
+			for key, item := range info {
+				safeKey := boundedErrorText(key, 128)
+				if len(safeInfo) == 20 || !safeBulkInfoKey(safeKey) {
+					continue
+				}
+				if text, ok := item.(string); ok {
+					if text = boundedErrorText(text, 1024); text != "" {
+						safeInfo[safeKey] = text
+					}
+				}
+			}
+			if len(safeInfo) > 0 {
+				result["info"] = safeInfo
+			}
+		}
+		for _, key := range []string{"details", "errors", "error"} {
+			if nested, exists := typed[key]; exists {
+				if safe := publicBulkError(nested); safe != nil {
+					result[key] = safe
+				}
+			}
+		}
+		if len(result) == 0 {
+			return "Apple returned an item-level failure"
+		}
+		return result
+	case []any:
+		if len(typed) > 20 {
+			typed = typed[:20]
+		}
+		result := make([]any, 0, len(typed))
+		for _, item := range typed {
+			if safe := publicBulkError(item); safe != nil {
+				result = append(result, safe)
+			}
+		}
+		return result
+	default:
+		return "Apple returned an item-level failure"
+	}
+}
+
+func safeBulkInfoKey(value string) bool {
+	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "").Replace(value))
+	switch normalized {
+	case "field", "parameter", "path", "location", "reason", "index", "correlationid", "resource", "resourceid", "selector":
+		return true
+	default:
+		return false
+	}
+}
+
+func boundedErrorText(value string, limit int) string {
+	value = strings.Map(func(character rune) rune {
+		if character < 0x20 || character == 0x7f {
+			return ' '
+		}
+		return character
+	}, strings.TrimSpace(value))
+	runes := []rune(value)
+	if len(runes) > limit {
+		value = string(runes[:limit])
+	}
+	return strings.TrimSpace(value)
 }
 
 func privateDataKey(key string) bool {

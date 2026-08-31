@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +20,22 @@ type fakeExecutor struct {
 	ambiguous    bool
 	onRead       func()
 	readStates   map[string]any
+	pagination   appleads.Pagination
+}
+
+type barrierExecutor struct {
+	state     any
+	arrived   chan struct{}
+	release   chan struct{}
+	writes    atomic.Int32
+	ambiguous bool
+}
+
+type dispatchBarrierExecutor struct {
+	state   any
+	started chan struct{}
+	release chan struct{}
+	writes  atomic.Int32
 }
 
 type sequenceExecutor struct {
@@ -59,7 +76,32 @@ func (f *fakeExecutor) Do(_ context.Context, _, _ string, operation appleads.Ope
 		f.onRead()
 	}
 	if value, exists := f.readStates[operation.Path()]; exists {
-		return appleads.Result{Data: value, Status: 200}, nil
+		return appleads.Result{Data: value, Status: 200, Pagination: f.pagination}, nil
+	}
+	return appleads.Result{Data: f.state, Status: 200, Pagination: f.pagination}, nil
+}
+
+func (f *barrierExecutor) Do(_ context.Context, _, _ string, operation appleads.Operation) (appleads.Result, error) {
+	if operation.IsMutation() {
+		f.writes.Add(1)
+		if f.ambiguous {
+			return appleads.Result{}, &appleads.AmbiguousWriteError{Cause: errors.New("timeout")}
+		}
+		return appleads.Result{Data: map[string]any{"updated": true}, Status: 200}, nil
+	}
+	if f.arrived != nil {
+		f.arrived <- struct{}{}
+		<-f.release
+	}
+	return appleads.Result{Data: f.state, Status: 200}, nil
+}
+
+func (f *dispatchBarrierExecutor) Do(_ context.Context, _, _ string, operation appleads.Operation) (appleads.Result, error) {
+	if operation.IsMutation() {
+		f.writes.Add(1)
+		f.started <- struct{}{}
+		<-f.release
+		return appleads.Result{Data: map[string]any{"updated": true}, Status: 200}, nil
 	}
 	return appleads.Result{Data: f.state, Status: 200}, nil
 }
@@ -121,8 +163,415 @@ func TestReceiptApplySingleUseAndBinding(t *testing.T) {
 	if err != nil || receipt.Status != "applied" || executor.writes != 1 {
 		t.Fatalf("receipt=%+v err=%v writes=%d", receipt, err, executor.writes)
 	}
-	if _, err := store.Apply(context.Background(), executor, preview.Receipt); err == nil {
-		t.Fatal("expected receipt reuse to fail")
+	if _, err := store.Apply(context.Background(), executor, preview.Receipt); !errors.Is(err, ErrReceiptUsed) {
+		t.Fatalf("expected receipt reuse error, got %v", err)
+	}
+}
+
+func TestExpiredReceiptTombstoneSurvivesRecordPruning(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	store := NewStoreForTest(func() time.Time { return now }, time.Minute)
+	executor := &fakeExecutor{state: map[string]any{"status": "ENABLED"}}
+	verify, _ := appleads.ResourceGet("campaigns", "123")
+	mutation, _ := appleads.ResourceUpdate("campaigns", "123", map[string]any{"status": "PAUSED"})
+	preview, err := store.Preview(context.Background(), executor, "owner", "456", "pause", []string{"123"}, map[string]any{"status": "PAUSED"}, verify, mutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Minute)
+	if _, _, err := store.Inspect(preview.Receipt); !errors.Is(err, ErrReceiptExpired) {
+		t.Fatalf("inspect error=%v", err)
+	}
+	if _, err := store.Apply(context.Background(), executor, preview.Receipt); !errors.Is(err, ErrReceiptExpired) {
+		t.Fatalf("apply error=%v", err)
+	}
+	if _, _, err := store.Inspect("unknown"); !errors.Is(err, ErrReceiptNotFound) {
+		t.Fatalf("unknown error=%v", err)
+	}
+}
+
+func TestBulkCreateAddsDirectVerificationReadsForReturnedIDs(t *testing.T) {
+	store := NewStore()
+	executor := &fakeExecutor{
+		state: map[string]any{"items": []any{}},
+		mutationData: map[string]any{"items": []any{
+			map[string]any{"correlationId": "0", "success": true, "result": map[string]any{"id": "101"}},
+		}},
+		readStates: map[string]any{},
+	}
+	query, _ := appleads.ResourceQuery("keywords", map[string]any{"pagination": map[string]any{"pageSize": 200}})
+	mutation, _ := appleads.BulkResource("keywords", "create", map[string]any{"items": []any{}})
+	preview, err := store.PreviewComposite(context.Background(), executor, "owner", "456", "bulk", nil, map[string]any{"items": []any{}}, []VerificationRead{{Name: "inventory", Operation: query}}, mutation, PreviewOptions{Items: []OperationItemPreview{{
+		CorrelationID: "0", Resource: "keywords", Action: "create", After: map[string]any{"text": "音声メモ", "status": "ENABLED"},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Apply(context.Background(), executor, preview.Receipt); err != nil {
+		t.Fatal(err)
+	}
+	executor.readStates["keywords/101"] = map[string]any{"id": "101", "text": "音声メモ", "status": "ENABLED"}
+	verification, err := store.Verify(context.Background(), executor, preview.Receipt)
+	if err != nil || verification.Status != "verified" {
+		t.Fatalf("verification=%+v err=%v", verification, err)
+	}
+	foundDirect := false
+	for _, object := range verification.Objects {
+		if object.Name == "direct_item_0" && object.Status == "changed" {
+			foundDirect = true
+		}
+	}
+	if !foundDirect {
+		t.Fatalf("verification=%+v", verification)
+	}
+}
+
+func TestBulkItemErrorsPreserveSafeFieldsWithoutRequestData(t *testing.T) {
+	failure := map[string]any{
+		"code": "INVALID_VALUE", "message": "invalid keyword",
+		"info": map[string]any{"field": "text", "requestBody": `{"authorization":"secret"}`},
+	}
+	safe := publicBulkError(failure)
+	data, err := json.Marshal(safe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := string(data)
+	if !strings.Contains(encoded, "INVALID_VALUE") || !strings.Contains(encoded, "invalid keyword") || !strings.Contains(encoded, `"field":"text"`) {
+		t.Fatalf("safe error=%s", encoded)
+	}
+	if strings.Contains(encoded, "requestBody") || strings.Contains(encoded, "secret") {
+		t.Fatalf("request data leaked: %s", encoded)
+	}
+	redacted, err := json.Marshal(redactPrivateData(map[string]any{"errors": []any{failure}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(redacted), "requestBody") || strings.Contains(string(redacted), "secret") {
+		t.Fatalf("result data leaked: %s", redacted)
+	}
+}
+
+func TestIndependentSameScopeReceiptsDriftButOneBulkReceiptAppliesOnce(t *testing.T) {
+	store := NewStore()
+	executor := &fakeExecutor{state: map[string]any{"items": []any{}}}
+	verify, _ := appleads.ResourceQuery("keywords", map[string]any{"pagination": map[string]any{"pageSize": 200}})
+	firstMutation, _ := appleads.ResourceCreate("keywords", map[string]any{"text": "voice"})
+	secondMutation, _ := appleads.ResourceCreate("keywords", map[string]any{"text": "notes"})
+	first, err := store.Preview(context.Background(), executor, "owner", "456", "first", nil, map[string]any{"text": "voice"}, verify, firstMutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Preview(context.Background(), executor, "owner", "456", "second", nil, map[string]any{"text": "notes"}, verify, secondMutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Apply(context.Background(), executor, first.Receipt); err != nil {
+		t.Fatal(err)
+	}
+	executor.state = map[string]any{"items": []any{map[string]any{"id": "101", "text": "voice"}}}
+	if _, err := store.Apply(context.Background(), executor, second.Receipt); !errors.Is(err, ErrStateDrift) {
+		t.Fatalf("second same-scope receipt error=%v", err)
+	}
+
+	store = NewStore()
+	executor = &fakeExecutor{
+		state: map[string]any{"items": []any{}},
+		mutationData: map[string]any{"items": []any{
+			map[string]any{"correlationId": 0, "success": true, "result": map[string]any{"id": "201"}},
+			map[string]any{"correlationId": 1, "success": true, "result": map[string]any{"id": "202"}},
+		}},
+	}
+	bulkMutation, _ := appleads.BulkResource("keywords", "create", map[string]any{"items": []any{}})
+	bulk, err := store.PreviewComposite(context.Background(), executor, "owner", "456", "bulk", nil, map[string]any{"items": []any{}}, []VerificationRead{{Name: "inventory", Operation: verify}}, bulkMutation, PreviewOptions{Items: []OperationItemPreview{
+		{CorrelationID: "0", Resource: "keywords", After: map[string]any{"text": "voice"}},
+		{CorrelationID: "1", Resource: "keywords", After: map[string]any{"text": "notes"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := store.Apply(context.Background(), executor, bulk.Receipt)
+	if err != nil || receipt.Status != "applied" || executor.writes != 1 {
+		t.Fatalf("receipt=%+v err=%v writes=%d", receipt, err, executor.writes)
+	}
+}
+
+func TestConcurrentSameScopeReceiptsReserveBeforeDispatch(t *testing.T) {
+	for _, ambiguous := range []bool{false, true} {
+		t.Run(fmt.Sprintf("ambiguous_%t", ambiguous), func(t *testing.T) {
+			store := NewStore()
+			executor := &barrierExecutor{state: map[string]any{"items": []any{}}, ambiguous: ambiguous}
+			verify, _ := appleads.ResourceQuery("keywords", map[string]any{"filters": []any{map[string]any{"field": "adGroupId", "operator": "EQUALS", "value": 10}}})
+			firstMutation, _ := appleads.ResourceCreate("keywords", map[string]any{"text": "voice"})
+			secondMutation, _ := appleads.ResourceCreate("keywords", map[string]any{"text": "notes"})
+			first, err := store.Preview(context.Background(), executor, "owner", "456", "first", nil, map[string]any{"text": "voice"}, verify, firstMutation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := store.Preview(context.Background(), executor, "owner", "456", "second", nil, map[string]any{"text": "notes"}, verify, secondMutation)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			executor.arrived = make(chan struct{}, 2)
+			executor.release = make(chan struct{})
+			results := make(chan error, 2)
+			go func() {
+				_, applyErr := store.Apply(context.Background(), executor, first.Receipt)
+				results <- applyErr
+			}()
+			go func() {
+				_, applyErr := store.Apply(context.Background(), executor, second.Receipt)
+				results <- applyErr
+			}()
+			<-executor.arrived
+			<-executor.arrived
+			close(executor.release)
+
+			firstErr := <-results
+			secondErr := <-results
+			driftCount := 0
+			for _, applyErr := range []error{firstErr, secondErr} {
+				if errors.Is(applyErr, ErrStateDrift) {
+					driftCount++
+					continue
+				}
+				if applyErr != nil {
+					t.Fatalf("unexpected apply error: %v", applyErr)
+				}
+			}
+			if driftCount != 1 || executor.writes.Load() != 1 {
+				t.Fatalf("driftCount=%d writes=%d errors=[%v %v]", driftCount, executor.writes.Load(), firstErr, secondErr)
+			}
+			_, previewErr := store.Preview(context.Background(), executor, "owner", "456", "fresh", nil, map[string]any{"text": "fresh"}, verify, firstMutation)
+			if ambiguous && !errors.Is(previewErr, ErrStateDrift) {
+				t.Fatalf("fresh preview must remain blocked after ambiguous write: %v", previewErr)
+			}
+			if !ambiguous && previewErr != nil {
+				t.Fatalf("fresh preview must be available after a completed write: %v", previewErr)
+			}
+		})
+	}
+}
+
+func TestCompositeReceiptReservesEveryScopeBeforeDispatch(t *testing.T) {
+	store := NewStore()
+	executor := &dispatchBarrierExecutor{
+		state:   map[string]any{"items": []any{}},
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	scope10, _ := appleads.ResourceQuery("keywords", map[string]any{"filters": []any{map[string]any{"field": "adGroupId", "operator": "EQUALS", "value": 10}}})
+	scope20, _ := appleads.ResourceQuery("keywords", map[string]any{"filters": []any{map[string]any{"field": "adGroupId", "operator": "EQUALS", "value": 20}}})
+	scope30, _ := appleads.ResourceQuery("keywords", map[string]any{"filters": []any{map[string]any{"field": "adGroupId", "operator": "EQUALS", "value": 30}}})
+	firstMutation, _ := appleads.ResourceCreate("keywords", map[string]any{"text": "first"})
+	secondMutation, _ := appleads.ResourceCreate("keywords", map[string]any{"text": "second"})
+	first, err := store.PreviewComposite(context.Background(), executor, "owner", "456", "first", nil, map[string]any{"text": "first"}, []VerificationRead{
+		{Name: "scope_10", Operation: scope10},
+		{Name: "scope_20", Operation: scope20},
+	}, firstMutation, PreviewOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.PreviewComposite(context.Background(), executor, "owner", "456", "second", nil, map[string]any{"text": "second"}, []VerificationRead{
+		{Name: "scope_20", Operation: scope20},
+		{Name: "scope_30", Operation: scope30},
+	}, secondMutation, PreviewOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstResult := make(chan error, 1)
+	go func() {
+		_, applyErr := store.Apply(context.Background(), executor, first.Receipt)
+		firstResult <- applyErr
+	}()
+	<-executor.started
+	if _, err := store.Apply(context.Background(), executor, second.Receipt); !errors.Is(err, ErrStateDrift) {
+		t.Fatalf("overlapping composite receipt error=%v", err)
+	}
+	close(executor.release)
+	if err := <-firstResult; err != nil {
+		t.Fatal(err)
+	}
+	if executor.writes.Load() != 1 {
+		t.Fatalf("writes=%d", executor.writes.Load())
+	}
+}
+
+func TestSemanticMutationScopeBlocksDifferentVerificationShapes(t *testing.T) {
+	bulkQuery, _ := appleads.ResourceQuery("keywords", map[string]any{
+		"filters": []any{
+			map[string]any{"field": "campaignId", "operator": "EQUALS", "value": 100},
+			map[string]any{"field": "adGroupId", "operator": "EQUALS", "value": 10},
+		},
+		"pagination": map[string]any{"offset": 0, "pageSize": 200, "fetchTotalCount": true},
+	})
+	genericQuery, _ := appleads.ResourceQuery("keywords", map[string]any{
+		"filters":    []any{map[string]any{"field": "adGroupId", "operator": "EQUALS", "value": 10}},
+		"pagination": map[string]any{"offset": 0, "pageSize": 200},
+	})
+	directGet, _ := appleads.ResourceGet("keywords", "501")
+	genericMutation, _ := appleads.ResourceCreate("keywords", map[string]any{"adGroupId": "10", "text": "first", "matchType": "EXACT"})
+	directMutation, _ := appleads.ResourceUpdate("keywords", "501", map[string]any{"status": "PAUSED"})
+	scope := MutationScope("inventory", "keywords", "100", "10")
+	for _, test := range []struct {
+		name          string
+		firstRead     appleads.Operation
+		firstMutation appleads.Operation
+	}{
+		{name: "generic create and bulk create", firstRead: genericQuery, firstMutation: genericMutation},
+		{name: "direct get and bulk", firstRead: directGet, firstMutation: directMutation},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := NewStore()
+			executor := &dispatchBarrierExecutor{state: []any{}, started: make(chan struct{}, 1), release: make(chan struct{})}
+			bulkMutation, _ := appleads.BulkResource("keywords", "create", map[string]any{"items": []any{}})
+			first, err := store.PreviewComposite(context.Background(), executor, "owner", "456", "generic", nil, map[string]any{"text": "first"}, []VerificationRead{{Name: "generic", Operation: test.firstRead, Scopes: []string{scope}}}, test.firstMutation, PreviewOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := store.PreviewComposite(context.Background(), executor, "owner", "456", "bulk", nil, map[string]any{"items": []any{}}, []VerificationRead{{Name: "bulk", Operation: bulkQuery, Scopes: []string{scope}}}, bulkMutation, PreviewOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstResult := make(chan error, 1)
+			go func() {
+				_, applyErr := store.Apply(context.Background(), executor, first.Receipt)
+				firstResult <- applyErr
+			}()
+			<-executor.started
+			if _, err := store.Apply(context.Background(), executor, second.Receipt); !errors.Is(err, ErrStateDrift) {
+				t.Fatalf("overlapping semantic receipt error=%v", err)
+			}
+			close(executor.release)
+			if err := <-firstResult; err != nil {
+				t.Fatal(err)
+			}
+			if executor.writes.Load() != 1 {
+				t.Fatalf("writes=%d", executor.writes.Load())
+			}
+		})
+	}
+}
+
+func TestReceiptHashIncludesPaginationAndRejectsIncompleteInventory(t *testing.T) {
+	t.Run("pagination metadata", func(t *testing.T) {
+		store := NewStore()
+		executor := &fakeExecutor{
+			state:      []any{map[string]any{"id": "1"}},
+			pagination: appleads.Pagination{Offset: 0, PageSize: 200, Total: 1},
+		}
+		verify, _ := appleads.ResourceQuery("keywords", map[string]any{"pagination": map[string]any{"offset": 0, "pageSize": 200}})
+		mutation, _ := appleads.ResourceCreate("keywords", map[string]any{"text": "voice"})
+		preview, err := store.Preview(context.Background(), executor, "owner", "456", "create", nil, map[string]any{"text": "voice"}, verify, mutation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		executor.pagination.Total = 2
+		if _, err := store.Apply(context.Background(), executor, preview.Receipt); !errors.Is(err, ErrStateDrift) {
+			t.Fatalf("pagination-only drift error=%v", err)
+		}
+		if executor.writes != 0 {
+			t.Fatalf("writes=%d", executor.writes)
+		}
+	})
+
+	t.Run("page 200 grows to 201", func(t *testing.T) {
+		store := NewStore()
+		items := make([]any, 200)
+		for index := range items {
+			items[index] = map[string]any{"id": fmt.Sprint(index + 1)}
+		}
+		executor := &fakeExecutor{
+			state:      items,
+			pagination: appleads.Pagination{Offset: 0, PageSize: 200, Total: 200},
+		}
+		verify, _ := appleads.ResourceQuery("keywords", map[string]any{"pagination": map[string]any{"offset": 0, "pageSize": 200}})
+		mutation, _ := appleads.ResourceCreate("keywords", map[string]any{"text": "voice"})
+		preview, err := store.PreviewComposite(context.Background(), executor, "owner", "456", "create", nil, map[string]any{"text": "voice"}, []VerificationRead{{Name: "inventory", Operation: verify, RequireComplete: true}}, mutation, PreviewOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		executor.pagination = appleads.Pagination{Offset: 0, PageSize: 200, Total: 201, Next: "offset:200"}
+		if _, err := store.Apply(context.Background(), executor, preview.Receipt); !errors.Is(err, ErrStateDrift) {
+			t.Fatalf("incomplete inventory error=%v", err)
+		}
+		if executor.writes != 0 {
+			t.Fatalf("writes=%d", executor.writes)
+		}
+	})
+}
+
+func TestBulkVerificationReadsReturnedIDsAfterInventoryGrowsPastOnePage(t *testing.T) {
+	store := NewStore()
+	initial := make([]any, 190)
+	for index := range initial {
+		initial[index] = map[string]any{"id": fmt.Sprint(index + 1)}
+	}
+	executor := &fakeExecutor{
+		state:      initial,
+		pagination: appleads.Pagination{Offset: 0, PageSize: 200, Total: 190},
+		mutationData: map[string]any{"items": []any{
+			map[string]any{"correlationId": "0", "success": true, "result": map[string]any{"id": "501"}},
+		}},
+		readStates: map[string]any{},
+	}
+	query, _ := appleads.ResourceQuery("keywords", map[string]any{"pagination": map[string]any{"offset": 0, "pageSize": 200, "fetchTotalCount": true}})
+	mutation, _ := appleads.BulkResource("keywords", "create", map[string]any{"items": []any{}})
+	preview, err := store.PreviewComposite(context.Background(), executor, "owner", "456", "bulk", nil, map[string]any{"items": []any{}}, []VerificationRead{{Name: "inventory", Operation: query, RequireComplete: true}}, mutation, PreviewOptions{Items: []OperationItemPreview{{
+		CorrelationID: "0", Resource: "keywords", Action: "create", After: map[string]any{"text": "voice", "status": "ENABLED"},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Apply(context.Background(), executor, preview.Receipt); err != nil {
+		t.Fatal(err)
+	}
+	grown := make([]any, 200)
+	copy(grown, initial)
+	for index := len(initial); index < len(grown); index++ {
+		grown[index] = map[string]any{"id": fmt.Sprint(index + 1)}
+	}
+	executor.state = grown
+	executor.pagination = appleads.Pagination{Offset: 0, PageSize: 200, Total: 218, Next: "offset:200"}
+	executor.readStates["keywords/501"] = map[string]any{"id": "501", "text": "voice", "status": "ENABLED"}
+	verification, err := store.Verify(context.Background(), executor, preview.Receipt)
+	if err != nil || verification.Status != "verified" {
+		t.Fatalf("verification=%+v err=%v", verification, err)
+	}
+	for _, object := range verification.Objects {
+		if object.Name == "item_0" && object.Status == "matched" {
+			return
+		}
+	}
+	t.Fatalf("direct item verification missing: %+v", verification.Objects)
+}
+
+func TestExpiredReceiptTombstonesKeepFullTTLUnderCapacityPressure(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	store := NewStoreForTest(func() time.Time { return now }, time.Second)
+	executor := &fakeExecutor{state: map[string]any{"status": "ENABLED"}}
+	verify, _ := appleads.ResourceGet("campaigns", "123")
+	mutation, _ := appleads.ResourceUpdate("campaigns", "123", map[string]any{"status": "PAUSED"})
+	oldestReceipt := ""
+	for index := 0; index < maxStoredReceiptStates; index++ {
+		preview, err := store.Preview(context.Background(), executor, "owner", "456", "pause", nil, map[string]any{"status": "PAUSED"}, verify, mutation)
+		if err != nil {
+			t.Fatalf("preview %d: %v", index, err)
+		}
+		if index == 0 {
+			oldestReceipt = preview.Receipt
+		}
+		now = now.Add(2 * time.Second)
+		if _, _, err := store.Inspect(preview.Receipt); !errors.Is(err, ErrReceiptExpired) {
+			t.Fatalf("expire %d: %v", index, err)
+		}
+	}
+	if _, err := store.Preview(context.Background(), executor, "owner", "456", "pause", nil, map[string]any{"status": "PAUSED"}, verify, mutation); err == nil || !strings.Contains(err.Error(), "receipt capacity reached") {
+		t.Fatalf("capacity error=%v", err)
+	}
+	if _, _, err := store.Inspect(oldestReceipt); !errors.Is(err, ErrReceiptExpired) {
+		t.Fatalf("oldest tombstone was evicted early: %v", err)
 	}
 }
 
@@ -348,8 +797,8 @@ func TestReceiptRejectsOrderedArrayDrift(t *testing.T) {
 	executor.state = map[string]any{
 		"creativeOrder": []any{"seasonal", "default"},
 	}
-	if _, err := store.Apply(context.Background(), executor, preview.Receipt); err == nil {
-		t.Fatal("expected ordered array drift rejection")
+	if _, err := store.Apply(context.Background(), executor, preview.Receipt); !errors.Is(err, ErrStateDrift) {
+		t.Fatalf("expected ordered array drift rejection, got %v", err)
 	}
 	if executor.writes != 0 {
 		t.Fatalf("writes=%d", executor.writes)

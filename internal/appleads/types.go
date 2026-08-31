@@ -16,6 +16,7 @@ type APIError struct {
 	Code           string         `json:"code,omitempty"`
 	Message        string         `json:"message"`
 	Details        map[string]any `json:"details,omitempty"`
+	Body           map[string]any `json:"appleBody,omitempty"`
 	ResponseFormat string         `json:"responseFormat,omitempty"`
 	Retryable      bool           `json:"retryable"`
 }

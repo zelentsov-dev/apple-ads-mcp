@@ -70,3 +70,27 @@ func TestOperationEncodedBodySize(t *testing.T) {
 		t.Fatalf("encoded body size=%d", size)
 	}
 }
+
+func TestVerificationScopeKeyBindsCanonicalRequest(t *testing.T) {
+	first, _ := ResourceQuery("keywords", map[string]any{
+		"filters":    []any{map[string]any{"field": "adGroupId", "operator": "EQUALS", "value": 10}},
+		"pagination": map[string]any{"offset": 0, "pageSize": 200},
+	})
+	second, _ := ResourceQuery("keywords", map[string]any{
+		"pagination": map[string]any{"pageSize": 200, "offset": 0},
+		"filters":    []any{map[string]any{"value": 10, "operator": "EQUALS", "field": "adGroupId"}},
+	})
+	different, _ := ResourceQuery("keywords", map[string]any{
+		"filters":    []any{map[string]any{"field": "adGroupId", "operator": "EQUALS", "value": 20}},
+		"pagination": map[string]any{"offset": 0, "pageSize": 200},
+	})
+	firstKey, err := first.VerificationScopeKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondKey, _ := second.VerificationScopeKey()
+	differentKey, _ := different.VerificationScopeKey()
+	if firstKey != secondKey || firstKey == differentKey {
+		t.Fatalf("first=%s second=%s different=%s", firstKey, secondKey, differentKey)
+	}
+}

@@ -9,16 +9,17 @@ Analysis, auditing, research, and recommendations do not authorize changes. Prev
 ## Receipt contract
 
 - A preview is non-mutating.
-- A receipt is bound to profile, ad account, operation, target, normalized payload, and current-state fingerprint. Composite and bulk receipts bind all affected inventory.
+- A receipt is bound to profile, ad account, operation, target, normalized payload, and current-state fingerprint. Every mutation producer also uses canonical object scopes; creates and parent deletes bind affected inventory and bounded cascade scopes.
 - Preview receipts expire after 10 minutes and are single-use for apply. An unresolved optimization receipt remains verifiable after restart through its owner-only sanitized local recovery recipe; keep the original receipt because only its SHA-256 hash is stored.
 - Apply re-reads current state and rejects drift.
 - Never substitute identifiers or values after preview.
+- Independent receipts created from the same semantic object or inventory snapshot intentionally conflict after the first apply, including when generic, bulk, delete, recommendation, shared-budget, or optimization tools use different verification reads. Unrelated ad-group inventories remain independent. Put related keyword creates into one bulk preview when they must apply as one drift-bound unit.
 
 ## Money and status
 
 Always show currency, cap, placement, parent IDs, object count, and exact before/after amounts. Treat budget increases, bid increases, enabling delivery, and broadening targeting as spend-affecting changes. A pause is reversible but still requires preview.
 
-Bulk operations may partially succeed. Report every item as `applied`, `failed`, or `unknown`; never claim rollback. Recommendation apply requires an explicit maximum and current recommendation readback. Never apply all recommendations automatically.
+Bulk operations may partially succeed. Report every item as `applied`, `failed`, or `unknown`, preserve Apple correlation IDs, and verify every Apple-returned object ID directly; never claim rollback. Recommendation apply requires an explicit maximum and current recommendation readback. Never apply all recommendations automatically.
 
 Optimization plans bind the named policy, reports, inventory, accounts, targets, payloads, and dependencies. The optimizer is on-demand and cannot spend in the background. Any report or inventory drift invalidates the receipt. A confirmed independent Apple `4xx` may allow unrelated actions to continue; an ambiguous result stops every remaining action.
 

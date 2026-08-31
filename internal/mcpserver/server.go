@@ -12,7 +12,7 @@ import (
 	toolset "github.com/zelentsov-dev/apple-ads-mcp/internal/tools"
 )
 
-var Version = "0.3.5"
+var Version = "0.3.6"
 
 type Options struct {
 	AllowWrites  bool

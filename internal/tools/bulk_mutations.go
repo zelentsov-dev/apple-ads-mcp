@@ -2,8 +2,11 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -26,34 +29,99 @@ func (s *Service) keywordsBulkCreatePreview(store *operations.Store) func(contex
 		if err := validateBulkCount(len(input.Items)); err != nil {
 			return failedPreview(err)
 		}
-		campaignID, placement, err := s.searchResultsScopeForAdGroup(ctx, input.AccountInput, input.AdGroupID)
-		if err != nil {
+		if err := validateAccount(input.AccountInput); err != nil {
 			return failedPreview(err)
 		}
-		items := make([]any, 0, len(input.Items))
-		previews := make([]operations.OperationItemPreview, 0, len(input.Items))
+		if err := s.localWriteAllowed(input.Profile); err != nil {
+			return failedPreview(err)
+		}
+		type normalizedItem struct {
+			correlationID string
+			wireID        json.Number
+			adGroupID     string
+			payload       map[string]any
+		}
+		normalized := make([]normalizedItem, 0, len(input.Items))
 		correlations := map[string]struct{}{}
 		duplicates := map[string]struct{}{}
 		for _, item := range input.Items {
-			if err := validateCorrelationID(item.CorrelationID, correlations); err != nil {
+			correlationID, correlationWireID, err := validateCorrelationID(item.CorrelationID, correlations)
+			if err != nil {
 				return failedPreview(err)
 			}
-			payload, err := typedPayloadMap(KeywordCreatePayload{AdGroupID: input.AdGroupID, Text: strings.TrimSpace(item.Text), MatchType: item.MatchType, Bid: item.Bid, Status: item.Status})
+			adGroupID := strings.TrimSpace(item.AdGroupID)
+			if adGroupID == "" {
+				adGroupID = input.AdGroupID
+			}
+			if !decimalIDPattern.MatchString(adGroupID) {
+				return failedPreview(errors.New("each keyword must resolve to a decimal adGroupId from the item or top-level default"))
+			}
+			payload, err := typedPayloadMap(KeywordCreatePayload{AdGroupID: adGroupID, Text: strings.TrimSpace(item.Text), MatchType: item.MatchType, Bid: item.Bid, Status: item.Status})
 			if err != nil {
 				return failedPreview(err)
 			}
 			if err := validateKeywordPayload(payload, true); err != nil {
 				return failedPreview(err)
 			}
-			key := strings.ToLower(strings.TrimSpace(item.Text)) + "\x00" + item.MatchType
+			key := adGroupID + "\x00" + strings.ToLower(strings.TrimSpace(item.Text)) + "\x00" + item.MatchType
 			if _, exists := duplicates[key]; exists {
 				return failedPreview(fmt.Errorf("duplicate keyword %q with match type %s", item.Text, item.MatchType))
 			}
 			duplicates[key] = struct{}{}
-			items = append(items, map[string]any{"correlationId": wireID(item.CorrelationID), "data": payload})
-			previews = append(previews, operations.OperationItemPreview{CorrelationID: item.CorrelationID, After: payload})
+			normalized = append(normalized, normalizedItem{correlationID: correlationID, wireID: correlationWireID, adGroupID: adGroupID, payload: payload})
 		}
-		return s.bulkPreview(ctx, store, input.AccountInput, "keywords", "create", "keywords_bulk_create", []string{campaignID, input.AdGroupID}, placement, items, previews, scopeQuery("adGroupId", input.AdGroupID))
+
+		type scope struct {
+			campaignID string
+			adGroupID  string
+		}
+		scopes := make(map[string]scope)
+		scopeOrder := make([]string, 0)
+		for _, item := range normalized {
+			if _, exists := scopes[item.adGroupID]; exists {
+				continue
+			}
+			campaignID, _, err := s.searchResultsScopeForAdGroup(ctx, input.AccountInput, item.adGroupID)
+			if err != nil {
+				return failedPreview(err)
+			}
+			scopes[item.adGroupID] = scope{campaignID: campaignID, adGroupID: item.adGroupID}
+			scopeOrder = append(scopeOrder, item.adGroupID)
+		}
+
+		items := make([]any, 0, len(normalized))
+		previews := make([]operations.OperationItemPreview, 0, len(normalized))
+		parentIDs := make([]string, 0, len(scopes)*2)
+		reads := make([]operations.VerificationRead, 0, len(scopes))
+		seenParents := make(map[string]struct{})
+		for _, adGroupID := range scopeOrder {
+			currentScope := scopes[adGroupID]
+			for _, parent := range []struct{ kind, id string }{{"campaign", currentScope.campaignID}, {"adgroup", currentScope.adGroupID}} {
+				key := parent.kind + ":" + parent.id
+				if _, exists := seenParents[key]; !exists {
+					seenParents[key] = struct{}{}
+					parentIDs = append(parentIDs, parent.id)
+				}
+			}
+			verify, err := appleads.ResourceQuery("keywords", keywordScopeQuery(currentScope.campaignID, currentScope.adGroupID))
+			if err != nil {
+				return failedPreview(err)
+			}
+			reads = append(reads, operations.VerificationRead{
+				Name:      "keywords_" + currentScope.campaignID + "_" + currentScope.adGroupID,
+				Operation: verify,
+				Scopes:    []string{inventoryMutationScope("keywords", currentScope.campaignID, currentScope.adGroupID)},
+			})
+		}
+		for _, item := range normalized {
+			currentScope := scopes[item.adGroupID]
+			items = append(items, map[string]any{"correlationId": item.wireID, "data": item.payload})
+			previews = append(previews, operations.OperationItemPreview{
+				CorrelationID: item.correlationID, CampaignID: currentScope.campaignID,
+				ResourceType: "keyword", Resource: "keywords", Action: "create", After: item.payload,
+			})
+		}
+		return s.bulkPreview(ctx, store, input.AccountInput, "keywords", "create", "keywords_bulk_create", parentIDs, "APPSTORE_SEARCH_RESULTS", items, previews, reads)
 	}
 }
 
@@ -65,6 +133,12 @@ func (s *Service) keywordsBulkUpdatePreview(store *operations.Store) func(contex
 		if err := validateBulkCount(len(input.Items)); err != nil {
 			return failedPreview(err)
 		}
+		if err := validateAccount(input.AccountInput); err != nil {
+			return failedPreview(err)
+		}
+		if err := s.localWriteAllowed(input.Profile); err != nil {
+			return failedPreview(err)
+		}
 		campaignID, placement, err := s.searchResultsScopeForAdGroup(ctx, input.AccountInput, input.AdGroupID)
 		if err != nil {
 			return failedPreview(err)
@@ -74,7 +148,8 @@ func (s *Service) keywordsBulkUpdatePreview(store *operations.Store) func(contex
 		correlations := map[string]struct{}{}
 		targets := map[string]struct{}{}
 		for _, item := range input.Items {
-			if err := validateCorrelationID(item.CorrelationID, correlations); err != nil {
+			correlationID, correlationWireID, err := validateCorrelationID(item.CorrelationID, correlations)
+			if err != nil {
 				return failedPreview(err)
 			}
 			if !decimalIDPattern.MatchString(item.ID) {
@@ -95,20 +170,30 @@ func (s *Service) keywordsBulkUpdatePreview(store *operations.Store) func(contex
 				return failedPreview(errors.New("each keyword update must change bid or status"))
 			}
 			payload["id"] = item.ID
-			items = append(items, map[string]any{"correlationId": wireID(item.CorrelationID), "data": payload})
-			previews = append(previews, operations.OperationItemPreview{CorrelationID: item.CorrelationID, TargetID: item.ID, After: payload})
+			items = append(items, map[string]any{"correlationId": correlationWireID, "data": payload})
+			previews = append(previews, operations.OperationItemPreview{CorrelationID: correlationID, CampaignID: campaignID, ResourceType: "keyword", Resource: "keywords", Action: "update", TargetID: item.ID, After: payload})
 		}
-		return s.bulkPreview(ctx, store, input.AccountInput, "keywords", "update", "keywords_bulk_update", []string{campaignID, input.AdGroupID}, placement, items, previews, scopeQuery("adGroupId", input.AdGroupID))
+		verify, err := appleads.ResourceQuery("keywords", keywordScopeQuery(campaignID, input.AdGroupID))
+		if err != nil {
+			return failedPreview(err)
+		}
+		return s.bulkPreview(ctx, store, input.AccountInput, "keywords", "update", "keywords_bulk_update", []string{campaignID, input.AdGroupID}, placement, items, previews, []operations.VerificationRead{{Name: "affected_inventory", Operation: verify, Scopes: []string{inventoryMutationScope("keywords", campaignID, input.AdGroupID)}}})
 	}
 }
 
 func (s *Service) negativeKeywordsBulkCreatePreview(store *operations.Store) func(context.Context, *mcp.CallToolRequest, BulkNegativeKeywordCreateInput) (*mcp.CallToolResult, PreviewOutput, error) {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, input BulkNegativeKeywordCreateInput) (*mcp.CallToolResult, PreviewOutput, error) {
-		campaignID, adGroupID, placement, err := s.negativeKeywordScope(ctx, input.AccountInput, input.CampaignID, input.AdGroupID)
-		if err != nil {
+		if err := validateBulkCount(len(input.Items)); err != nil {
 			return failedPreview(err)
 		}
-		if err := validateBulkCount(len(input.Items)); err != nil {
+		if err := validateAccount(input.AccountInput); err != nil {
+			return failedPreview(err)
+		}
+		if err := s.localWriteAllowed(input.Profile); err != nil {
+			return failedPreview(err)
+		}
+		campaignID, adGroupID, placement, err := s.negativeKeywordScope(ctx, input.AccountInput, input.CampaignID, input.AdGroupID)
+		if err != nil {
 			return failedPreview(err)
 		}
 		items := make([]any, 0, len(input.Items))
@@ -116,7 +201,8 @@ func (s *Service) negativeKeywordsBulkCreatePreview(store *operations.Store) fun
 		correlations := map[string]struct{}{}
 		duplicates := map[string]struct{}{}
 		for _, item := range input.Items {
-			if err := validateCorrelationID(item.CorrelationID, correlations); err != nil {
+			correlationID, correlationWireID, err := validateCorrelationID(item.CorrelationID, correlations)
+			if err != nil {
 				return failedPreview(err)
 			}
 			payload, err := typedPayloadMap(NegativeKeywordCreatePayload{CampaignID: input.CampaignID, AdGroupID: input.AdGroupID, Text: strings.TrimSpace(item.Text), MatchType: item.MatchType, Status: item.Status})
@@ -131,8 +217,8 @@ func (s *Service) negativeKeywordsBulkCreatePreview(store *operations.Store) fun
 				return failedPreview(fmt.Errorf("duplicate negative keyword %q with match type %s", item.Text, item.MatchType))
 			}
 			duplicates[key] = struct{}{}
-			items = append(items, map[string]any{"correlationId": wireID(item.CorrelationID), "data": payload})
-			previews = append(previews, operations.OperationItemPreview{CorrelationID: item.CorrelationID, After: payload})
+			items = append(items, map[string]any{"correlationId": correlationWireID, "data": payload})
+			previews = append(previews, operations.OperationItemPreview{CorrelationID: correlationID, CampaignID: campaignID, ResourceType: "negative_keyword", Resource: "negative-keywords", Action: "create", After: payload})
 		}
 		parents := []string{campaignID}
 		scopeField, scopeID := "campaignId", campaignID
@@ -140,17 +226,27 @@ func (s *Service) negativeKeywordsBulkCreatePreview(store *operations.Store) fun
 			parents = append(parents, adGroupID)
 			scopeField, scopeID = "adGroupId", adGroupID
 		}
-		return s.bulkPreview(ctx, store, input.AccountInput, "negative-keywords", "create", "negative_keywords_bulk_create", parents, placement, items, previews, scopeQuery(scopeField, scopeID))
+		verify, err := appleads.ResourceQuery("negative-keywords", scopeQuery(scopeField, scopeID))
+		if err != nil {
+			return failedPreview(err)
+		}
+		return s.bulkPreview(ctx, store, input.AccountInput, "negative-keywords", "create", "negative_keywords_bulk_create", parents, placement, items, previews, []operations.VerificationRead{{Name: "affected_inventory", Operation: verify, Scopes: []string{inventoryMutationScope("negative-keywords", parents...)}}})
 	}
 }
 
 func (s *Service) negativeKeywordsBulkUpdatePreview(store *operations.Store) func(context.Context, *mcp.CallToolRequest, BulkNegativeKeywordUpdateInput) (*mcp.CallToolResult, PreviewOutput, error) {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, input BulkNegativeKeywordUpdateInput) (*mcp.CallToolResult, PreviewOutput, error) {
-		campaignID, adGroupID, placement, err := s.negativeKeywordScope(ctx, input.AccountInput, input.CampaignID, input.AdGroupID)
-		if err != nil {
+		if err := validateBulkCount(len(input.Items)); err != nil {
 			return failedPreview(err)
 		}
-		if err := validateBulkCount(len(input.Items)); err != nil {
+		if err := validateAccount(input.AccountInput); err != nil {
+			return failedPreview(err)
+		}
+		if err := s.localWriteAllowed(input.Profile); err != nil {
+			return failedPreview(err)
+		}
+		campaignID, adGroupID, placement, err := s.negativeKeywordScope(ctx, input.AccountInput, input.CampaignID, input.AdGroupID)
+		if err != nil {
 			return failedPreview(err)
 		}
 		items := make([]any, 0, len(input.Items))
@@ -158,7 +254,8 @@ func (s *Service) negativeKeywordsBulkUpdatePreview(store *operations.Store) fun
 		correlations := map[string]struct{}{}
 		targets := map[string]struct{}{}
 		for _, item := range input.Items {
-			if err := validateCorrelationID(item.CorrelationID, correlations); err != nil {
+			correlationID, correlationWireID, err := validateCorrelationID(item.CorrelationID, correlations)
+			if err != nil {
 				return failedPreview(err)
 			}
 			if !decimalIDPattern.MatchString(item.ID) {
@@ -179,8 +276,8 @@ func (s *Service) negativeKeywordsBulkUpdatePreview(store *operations.Store) fun
 				return failedPreview(errors.New("each negative keyword update must change status"))
 			}
 			payload["id"] = item.ID
-			items = append(items, map[string]any{"correlationId": wireID(item.CorrelationID), "data": payload})
-			previews = append(previews, operations.OperationItemPreview{CorrelationID: item.CorrelationID, TargetID: item.ID, After: payload})
+			items = append(items, map[string]any{"correlationId": correlationWireID, "data": payload})
+			previews = append(previews, operations.OperationItemPreview{CorrelationID: correlationID, CampaignID: campaignID, ResourceType: "negative_keyword", Resource: "negative-keywords", Action: "update", TargetID: item.ID, After: payload})
 		}
 		parents := []string{campaignID}
 		scopeField, scopeID := "campaignId", campaignID
@@ -188,11 +285,15 @@ func (s *Service) negativeKeywordsBulkUpdatePreview(store *operations.Store) fun
 			parents = append(parents, adGroupID)
 			scopeField, scopeID = "adGroupId", adGroupID
 		}
-		return s.bulkPreview(ctx, store, input.AccountInput, "negative-keywords", "update", "negative_keywords_bulk_update", parents, placement, items, previews, scopeQuery(scopeField, scopeID))
+		verify, err := appleads.ResourceQuery("negative-keywords", scopeQuery(scopeField, scopeID))
+		if err != nil {
+			return failedPreview(err)
+		}
+		return s.bulkPreview(ctx, store, input.AccountInput, "negative-keywords", "update", "negative_keywords_bulk_update", parents, placement, items, previews, []operations.VerificationRead{{Name: "affected_inventory", Operation: verify, Scopes: []string{inventoryMutationScope("negative-keywords", parents...)}}})
 	}
 }
 
-func (s *Service) bulkPreview(ctx context.Context, store *operations.Store, account AccountInput, resource, action, name string, parentIDs []string, placement string, items []any, previews []operations.OperationItemPreview, query map[string]any) (*mcp.CallToolResult, PreviewOutput, error) {
+func (s *Service) bulkPreview(ctx context.Context, store *operations.Store, account AccountInput, resource, action, name string, parentIDs []string, placement string, items []any, previews []operations.OperationItemPreview, reads []operations.VerificationRead) (*mcp.CallToolResult, PreviewOutput, error) {
 	body := map[string]any{"allowPartialSuccess": true, "items": items}
 	if err := s.ensurePayloadCurrency(ctx, account, body); err != nil {
 		return failedPreview(err)
@@ -200,20 +301,22 @@ func (s *Service) bulkPreview(ctx context.Context, store *operations.Store, acco
 	if err := s.validateWrite(ctx, account, body); err != nil {
 		return failedPreview(err)
 	}
-	verify, err := appleads.ResourceQuery(resource, query)
-	if err != nil {
-		return failedPreview(err)
-	}
-	current, err := s.manager.Do(ctx, account.Profile, account.AdAccountID, verify)
-	if err != nil {
-		return failedPreview(fmt.Errorf("read affected inventory: %w", err))
-	}
-	if current.Pagination.Next != "" || current.Pagination.Total > 200 {
-		return failedPreview(errors.New("selected inventory exceeds 200 objects and cannot be bound to one safe bulk receipt"))
+	current := make(map[string]any, len(reads))
+	for index := range reads {
+		reads[index].RequireComplete = true
+		read := reads[index]
+		result, err := s.manager.Do(ctx, account.Profile, account.AdAccountID, read.Operation)
+		if err != nil {
+			return failedPreview(fmt.Errorf("read affected inventory %s: %w", read.Name, err))
+		}
+		if result.Pagination.Next != "" || result.Pagination.Total > 200 {
+			return failedPreview(errors.New("selected inventory exceeds 200 objects and cannot be bound to one safe bulk receipt"))
+		}
+		current[read.Name] = result.Data
 	}
 	if action == "update" {
 		for _, item := range previews {
-			if !containsResourceID(current.Data, item.TargetID) {
+			if !containsResourceID(current, item.TargetID) {
 				return failedPreview(fmt.Errorf("target %s is not present in the selected scope", item.TargetID))
 			}
 		}
@@ -232,7 +335,7 @@ func (s *Service) bulkPreview(ctx context.Context, store *operations.Store, acco
 	if currencies := collectFieldValues(body, "currency", MaxItems); len(currencies) > 0 {
 		impact.Currency = strings.ToUpper(currencies[0])
 	}
-	preview, err := store.PreviewComposite(ctx, s.manager, account.Profile, account.AdAccountID, name, targetIDs, body, []operations.VerificationRead{{Name: "affected_inventory", Operation: verify}}, mutation, operations.PreviewOptions{Impact: impact, Items: previews})
+	preview, err := store.PreviewComposite(ctx, s.manager, account.Profile, account.AdAccountID, name, targetIDs, body, reads, mutation, operations.PreviewOptions{Impact: impact, Items: previews})
 	if err != nil {
 		return failedPreview(err)
 	}
@@ -277,15 +380,68 @@ func validateBulkCount(count int) error {
 	return nil
 }
 
-func validateCorrelationID(value string, seen map[string]struct{}) error {
-	if !decimalIDPattern.MatchString(value) {
-		return errors.New("each correlationId must be a positive decimal string")
+func validateCorrelationID(value any, seen map[string]struct{}) (string, json.Number, error) {
+	var text string
+	switch typed := value.(type) {
+	case string:
+		text = strings.TrimSpace(typed)
+	case json.Number:
+		text = typed.String()
+	case int:
+		if typed < 0 {
+			return "", "", errors.New("each correlationId must be a non-negative decimal string or integer")
+		}
+		text = strconv.Itoa(typed)
+	case int32:
+		if typed < 0 {
+			return "", "", errors.New("each correlationId must be a non-negative decimal string or integer")
+		}
+		text = strconv.FormatInt(int64(typed), 10)
+	case int64:
+		if typed < 0 {
+			return "", "", errors.New("each correlationId must be a non-negative decimal string or integer")
+		}
+		text = strconv.FormatInt(typed, 10)
+	case uint:
+		text = strconv.FormatUint(uint64(typed), 10)
+	case uint32:
+		text = strconv.FormatUint(uint64(typed), 10)
+	case uint64:
+		if typed > math.MaxInt64 {
+			return "", "", errors.New("each correlationId must fit Apple int64")
+		}
+		text = strconv.FormatUint(typed, 10)
+	case float64:
+		if typed < 0 || typed > math.MaxInt64 || typed != math.Trunc(typed) || typed > 1<<53-1 {
+			return "", "", errors.New("each correlationId must be a non-negative safe integer")
+		}
+		text = strconv.FormatInt(int64(typed), 10)
+	default:
+		return "", "", errors.New("each correlationId must be a non-negative decimal string or integer")
 	}
-	if _, exists := seen[value]; exists {
-		return fmt.Errorf("duplicate correlationId %s", value)
+	if text == "" || strings.IndexFunc(text, func(character rune) bool { return character < '0' || character > '9' }) >= 0 {
+		return "", "", errors.New("each correlationId must be a non-negative decimal string or integer that fits Apple int64")
 	}
-	seen[value] = struct{}{}
-	return nil
+	parsed, err := strconv.ParseUint(text, 10, 63)
+	if err != nil {
+		return "", "", errors.New("each correlationId must be a non-negative decimal string or integer that fits Apple int64")
+	}
+	text = strconv.FormatUint(parsed, 10)
+	if _, exists := seen[text]; exists {
+		return "", "", fmt.Errorf("duplicate correlationId %s", text)
+	}
+	seen[text] = struct{}{}
+	return text, json.Number(text), nil
+}
+
+func keywordScopeQuery(campaignID, adGroupID string) map[string]any {
+	return map[string]any{
+		"filters": []any{
+			map[string]any{"field": "campaignId", "operator": "EQUALS", "value": wireID(campaignID)},
+			map[string]any{"field": "adGroupId", "operator": "EQUALS", "value": wireID(adGroupID)},
+		},
+		"pagination": map[string]any{"offset": 0, "pageSize": 200, "fetchTotalCount": true},
+	}
 }
 
 func scopeQuery(scopeField, scopeID string) map[string]any {
@@ -295,7 +451,7 @@ func scopeQuery(scopeField, scopeID string) map[string]any {
 	}
 	return map[string]any{
 		"filters":    filters,
-		"pagination": map[string]any{"offset": 0, "pageSize": 200},
+		"pagination": map[string]any{"offset": 0, "pageSize": 200, "fetchTotalCount": true},
 	}
 }
 

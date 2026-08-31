@@ -255,6 +255,15 @@ func apiError(status int, data any) error {
 				result.Details["details"] = details
 			}
 		}
+		if status >= 400 && status < 500 && result.ResponseFormat == "" {
+			result.Body = map[string]any{"message": result.Message}
+			if result.Code != "" {
+				result.Body["code"] = result.Code
+			}
+			if len(details) > 0 {
+				result.Body["details"] = details
+			}
+		}
 	}
 	return result
 }
@@ -303,6 +312,9 @@ func safeErrorDetails(value any) []any {
 					continue
 				}
 				key = safeErrorText(key, 128)
+				if !safeErrorInfoKey(key) {
+					continue
+				}
 				text = safeErrorText(text, 1024)
 				if key == "" || text == "" {
 					continue
@@ -318,6 +330,16 @@ func safeErrorDetails(value any) []any {
 		}
 	}
 	return result
+}
+
+func safeErrorInfoKey(value string) bool {
+	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "").Replace(value))
+	switch normalized {
+	case "field", "parameter", "path", "location", "reason", "index", "correlationid", "resource", "resourceid", "selector":
+		return true
+	default:
+		return false
+	}
 }
 
 func safeErrorText(value string, limit int) string {

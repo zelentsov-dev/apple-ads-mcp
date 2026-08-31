@@ -111,6 +111,31 @@ func (s *Service) keywordBidPreview(store *operations.Store) func(context.Contex
 		if err := input.Bid.ValidatePositive(); err != nil {
 			return failedPreview(err)
 		}
+		if err := validateAccount(input.AccountInput); err != nil {
+			return failedPreview(err)
+		}
+		if err := s.localWriteAllowed(input.Profile); err != nil {
+			return failedPreview(err)
+		}
+		if strings.TrimSpace(input.CampaignID) != "" || strings.TrimSpace(input.AdGroupID) != "" {
+			current, err := s.readResource(ctx, input.AccountInput, "keywords", input.KeywordID)
+			if err != nil {
+				return failedPreview(err)
+			}
+			for _, assertion := range []struct{ field, expected string }{{"campaignId", input.CampaignID}, {"adGroupId", input.AdGroupID}} {
+				field, expected := assertion.field, assertion.expected
+				expected = strings.TrimSpace(expected)
+				if expected == "" {
+					continue
+				}
+				if !decimalIDPattern.MatchString(expected) {
+					return failedPreview(errors.New(field + " assertion must be a decimal string"))
+				}
+				if actual := findStringField(current, field); actual != expected {
+					return failedPreview(errors.New(field + " assertion does not match the current keyword lineage"))
+				}
+			}
+		}
 		payload, err := typedPayloadMap(KeywordUpdatePayload{Bid: &input.Bid})
 		if err != nil {
 			return failedPreview(err)

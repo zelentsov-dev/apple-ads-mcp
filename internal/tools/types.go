@@ -59,9 +59,102 @@ type ResourceInput struct {
 	ID string `json:"id" jsonschema:"resource ID as a string"`
 }
 
+type CampaignResourceInput struct {
+	AccountInput
+	ID         string `json:"id,omitempty" jsonschema:"legacy campaign ID"`
+	CampaignID string `json:"campaignId,omitempty" jsonschema:"campaign ID as a string"`
+}
+
+type AdGroupResourceInput struct {
+	AccountInput
+	ID        string `json:"id,omitempty" jsonschema:"legacy ad group ID"`
+	AdGroupID string `json:"adGroupId,omitempty" jsonschema:"ad group ID as a string"`
+}
+
+type KeywordResourceInput struct {
+	AccountInput
+	ID        string `json:"id,omitempty" jsonschema:"legacy keyword ID"`
+	KeywordID string `json:"keywordId,omitempty" jsonschema:"keyword ID as a string"`
+}
+
+type NegativeKeywordResourceInput struct {
+	AccountInput
+	ID                string `json:"id,omitempty" jsonschema:"legacy negative keyword ID"`
+	NegativeKeywordID string `json:"negativeKeywordId,omitempty" jsonschema:"negative keyword ID as a string"`
+}
+
+type AdResourceInput struct {
+	AccountInput
+	ID   string `json:"id,omitempty" jsonschema:"legacy ad ID"`
+	AdID string `json:"adId,omitempty" jsonschema:"ad ID as a string"`
+}
+
+type CreativeResourceInput struct {
+	AccountInput
+	ID         string `json:"id,omitempty" jsonschema:"legacy creative ID"`
+	CreativeID string `json:"creativeId,omitempty" jsonschema:"creative ID as a string"`
+}
+
+type SharedBudgetResourceInput struct {
+	AccountInput
+	ID             string `json:"id,omitempty" jsonschema:"legacy shared budget ID"`
+	SharedBudgetID string `json:"sharedBudgetId,omitempty" jsonschema:"shared budget ID as a string"`
+}
+
 type AppLocaleDetailsInput struct {
 	QueryInput
-	AdamID string `json:"adamId" jsonschema:"App Store Adam ID as a string"`
+	AdamID        string `json:"adamId" jsonschema:"App Store Adam ID as a string"`
+	LanguageCode  string `json:"languageCode,omitempty" jsonschema:"optional exact locale such as en-US"`
+	IncludeAssets bool   `json:"includeAssets,omitempty" jsonschema:"include full assets for one required languageCode"`
+}
+
+type CampaignQueryInput struct {
+	QueryInput
+	ID         string `json:"id,omitempty" jsonschema:"legacy exact campaign ID shortcut"`
+	CampaignID string `json:"campaignId,omitempty" jsonschema:"exact campaign ID shortcut"`
+}
+
+type AdGroupQueryInput struct {
+	QueryInput
+	ID         string `json:"id,omitempty" jsonschema:"legacy exact ad group ID shortcut"`
+	AdGroupID  string `json:"adGroupId,omitempty" jsonschema:"exact ad group ID shortcut"`
+	CampaignID string `json:"campaignId,omitempty" jsonschema:"campaign scope shortcut"`
+}
+
+type KeywordQueryInput struct {
+	QueryInput
+	ID         string `json:"id,omitempty" jsonschema:"legacy exact keyword ID shortcut"`
+	KeywordID  string `json:"keywordId,omitempty" jsonschema:"exact keyword ID shortcut"`
+	CampaignID string `json:"campaignId,omitempty" jsonschema:"campaign scope shortcut"`
+	AdGroupID  string `json:"adGroupId,omitempty" jsonschema:"ad group scope shortcut"`
+}
+
+type NegativeKeywordQueryInput struct {
+	QueryInput
+	ID                string `json:"id,omitempty" jsonschema:"legacy exact negative keyword ID shortcut"`
+	NegativeKeywordID string `json:"negativeKeywordId,omitempty" jsonschema:"exact negative keyword ID shortcut"`
+	CampaignID        string `json:"campaignId,omitempty" jsonschema:"campaign scope shortcut; without adGroupId selects campaign-level negatives"`
+	AdGroupID         string `json:"adGroupId,omitempty" jsonschema:"ad group scope shortcut"`
+}
+
+type AdQueryInput struct {
+	QueryInput
+	ID         string `json:"id,omitempty" jsonschema:"legacy exact ad ID shortcut"`
+	AdID       string `json:"adId,omitempty" jsonschema:"exact ad ID shortcut"`
+	CampaignID string `json:"campaignId,omitempty" jsonschema:"campaign scope shortcut"`
+	AdGroupID  string `json:"adGroupId,omitempty" jsonschema:"ad group scope shortcut"`
+}
+
+type CreativeQueryInput struct {
+	QueryInput
+	ID         string `json:"id,omitempty" jsonschema:"legacy exact creative ID shortcut"`
+	CreativeID string `json:"creativeId,omitempty" jsonschema:"exact creative ID shortcut"`
+}
+
+type SharedBudgetQueryInput struct {
+	QueryInput
+	ID             string `json:"id,omitempty" jsonschema:"legacy exact shared budget ID shortcut"`
+	SharedBudgetID string `json:"sharedBudgetId,omitempty" jsonschema:"exact shared budget ID shortcut"`
 }
 
 type ChangeHistoryDetailInput struct {
@@ -137,6 +230,40 @@ type QueryOptionsInput struct {
 	ImpressionShareReportType string   `json:"impressionShareReportType,omitempty" jsonschema:"FIRST_SLOT or ALL_SLOTS"`
 }
 
+type KeywordReportInput struct {
+	QueryInput
+	IncludeZeroMetrics bool `json:"includeZeroMetrics,omitempty" jsonschema:"include keywords with no metric rows by requesting EMPTY_METRICS"`
+}
+
+type ChangeHistoryInput struct {
+	QueryInput
+	Start          string   `json:"start" jsonschema:"required event window start date in YYYY-MM-DD"`
+	End            string   `json:"end" jsonschema:"required event window end date in YYYY-MM-DD"`
+	EntityTypes    []string `json:"entityTypes,omitempty" jsonschema:"optional Apple audit entity types"`
+	EntityIDs      []string `json:"entityIds,omitempty" jsonschema:"optional changed entity IDs"`
+	EventTypes     []string `json:"eventTypes,omitempty" jsonschema:"CREATE, UPDATE, or DELETE"`
+	UserTypes      []string `json:"userTypes,omitempty" jsonschema:"CUSTOMER, CUSTOMER_API, or APPLE_SUPPORT"`
+	UserIDs        []string `json:"userIds,omitempty" jsonschema:"optional Apple Ads user IDs"`
+	TransactionIDs []string `json:"transactionIds,omitempty" jsonschema:"optional audit transaction IDs"`
+	CampaignIDs    []string `json:"campaignIds,omitempty" jsonschema:"optional parent campaign IDs"`
+	AdGroupIDs     []string `json:"adGroupIds,omitempty" jsonschema:"optional parent ad group IDs"`
+	AdAccountIDs   []string `json:"adAccountIds,omitempty" jsonschema:"optional audited ad account IDs"`
+	NeedTotals     *bool    `json:"needTotals,omitempty" jsonschema:"request accurate totalCount; Apple defaults to true"`
+	Metadata       string   `json:"metadata,omitempty" jsonschema:"none, latest, or snapshot; defaults to latest"`
+	TimeZone       string   `json:"timeZone,omitempty" jsonschema:"UTC or ORTZ; defaults to UTC"`
+}
+
+type ImpressionShareInput struct {
+	AccountInput
+	AdamID      string           `json:"adamId" jsonschema:"promoted app Adam ID as a string"`
+	Country     string           `json:"country,omitempty" jsonschema:"optional ISO country or region code"`
+	Start       string           `json:"start" jsonschema:"range start in YYYY-MM-DD"`
+	End         string           `json:"end" jsonschema:"range end in YYYY-MM-DD"`
+	Granularity string           `json:"granularity" jsonschema:"DAILY or WEEKLY_SUN_SAT"`
+	ReportType  string           `json:"reportType" jsonschema:"FIRST_SLOT or ALL_SLOTS"`
+	Pagination  *PaginationInput `json:"pagination,omitempty" jsonschema:"bounded result window"`
+}
+
 type AppOpportunityInput struct {
 	AccountInput
 	AdamID             string   `json:"adamId" jsonschema:"App Store Adam ID as a string"`
@@ -155,11 +282,13 @@ type Output struct {
 type ErrorOutput struct {
 	Type           string         `json:"type"`
 	Message        string         `json:"message"`
-	HTTPStatus     int            `json:"httpStatus,omitempty"`
-	Code           string         `json:"code,omitempty"`
+	HTTPStatus     int            `json:"httpStatus"`
+	Code           string         `json:"code"`
 	ResponseFormat string         `json:"responseFormat,omitempty"`
-	Retryable      bool           `json:"retryable,omitempty"`
-	Details        map[string]any `json:"details,omitempty"`
+	Retryable      bool           `json:"retryable"`
+	Details        map[string]any `json:"details"`
+	AppleBody      map[string]any `json:"appleBody,omitempty"`
+	Hint           string         `json:"hint"`
 }
 
 type Spec struct {
@@ -267,21 +396,14 @@ func boundData(value any) (any, bool) {
 }
 
 func errorOutput(err error) Output {
-	output := ErrorOutput{Type: "request_error", Message: err.Error()}
-	summary := "Apple Ads request failed"
-	var apiError *appleads.APIError
-	if errors.As(err, &apiError) {
-		output.Type = "apple_api_error"
-		output.Message = apiError.Message
-		output.HTTPStatus = apiError.HTTPStatus
-		output.Code = apiError.Code
-		output.ResponseFormat = apiError.ResponseFormat
-		output.Retryable = apiError.Retryable
-		output.Details = apiError.Details
-		summary = fmt.Sprintf("Apple Ads API request failed with HTTP %d", apiError.HTTPStatus)
-		if apiError.Code != "" {
-			summary += " (" + apiError.Code + ")"
+	output := classifyError(err)
+	summary := output.Message
+	if output.Type == "apple_api_error" {
+		summary = fmt.Sprintf("Apple Ads API request failed with HTTP %d", output.HTTPStatus)
+		if output.Code != "" {
+			summary += " (" + output.Code + ")"
 		}
+		summary += ": " + output.Message
 	}
 	return Output{Summary: summary, Error: &output}
 }
@@ -495,7 +617,7 @@ func reportGroupBy(kind string) map[string]struct{} {
 
 func allowedFilterOperator(value string) bool {
 	switch strings.ToUpper(strings.TrimSpace(value)) {
-	case "EQUALS", "NOT_EQUALS", "IN", "NOT_IN", "GREATER_THAN", "GREATER_THAN_OR_EQUALS", "LESS_THAN", "LESS_THAN_OR_EQUALS", "CONTAINS", "STARTSWITH", "IS_NULL", "IS_NOT_NULL":
+	case "EQUALS", "NOT_EQUALS", "IN", "NOT_IN", "GREATER_THAN", "GREATER_THAN_OR_EQUAL_TO", "LESS_THAN", "LESS_THAN_OR_EQUAL_TO", "BETWEEN", "LIKE", "CONTAINS", "CONTAINS_ANY", "CONTAINS_ALL", "STARTS_WITH", "ENDS_WITH", "IS_NULL", "IS_NOT_NULL":
 		return true
 	default:
 		return false
@@ -515,6 +637,10 @@ func normalizeQueryFilters(filters []QueryFilterInput) ([]QueryFilterInput, erro
 	result := make([]QueryFilterInput, len(filters))
 	copy(result, filters)
 	for i := range result {
+		result[i].Field = strings.TrimSpace(result[i].Field)
+		if result[i].Field == "" {
+			return nil, fmt.Errorf("filters[%d].field is required", i)
+		}
 		result[i].Operator = strings.ToUpper(strings.TrimSpace(result[i].Operator))
 		if !allowedFilterOperator(result[i].Operator) {
 			return nil, fmt.Errorf("filters[%d].operator %q is not supported", i, result[i].Operator)

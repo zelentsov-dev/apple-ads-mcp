@@ -60,4 +60,33 @@ APPLE_ADS_LIVE_OPTIMIZATION_POLICY=policy-name \
 go test -tags=live_read_only ./internal/live -run '^TestMCPV03OptimizationReadOnly$' -count=1
 ```
 
+Run the v0.3.6 read-only P2 matrix with an owned app's exact non-ASCII display name, one locale, and one existing Search Results ad group:
+
+```bash
+APPLE_ADS_PROFILE=profile-name \
+APPLE_ADS_AD_ACCOUNT_ID=account-id \
+APPLE_ADS_LIVE_ADAM_ID=app-adam-id \
+APPLE_ADS_LIVE_STOREFRONT=US \
+APPLE_ADS_LIVE_UNICODE_APP_QUERY=exact-app-name \
+APPLE_ADS_LIVE_LANGUAGE_CODE=en-US \
+APPLE_ADS_LIVE_AD_GROUP_ID=ad-group-id \
+APPLE_ADS_LIVE_V036_READ_ONLY=P2_MATRIX \
+go test -tags=live_read_only ./internal/live -run '^TestMCPV036ReadOnlyP2Acceptance$' -count=1
+```
+
+The P2 matrix accepts a successful impression-share response or an honest structured Apple error, but every other section must satisfy its typed contract. It performs no mutations.
+
+Run the v0.3.6 keyword bulk acceptance only after separately authorizing 30 new keywords under an existing Search Results campaign and ad group that are both `PAUSED`:
+
+```bash
+APPLE_ADS_PROFILE=profile-name \
+APPLE_ADS_AD_ACCOUNT_ID=account-id \
+APPLE_ADS_LIVE_AD_GROUP_ID=paused-ad-group-id \
+APPLE_ADS_ALLOW_WRITES=true \
+APPLE_ADS_LIVE_WRITE=V036_PAUSED_BULK_2_28 \
+go test -tags=live_write ./internal/live -run '^TestMCPV036PausedKeywordBulk2And28$' -count=1
+```
+
+The bulk acceptance sends one 2-item request without bids and one 28-item request with bids, includes ASCII and Japanese text, starts correlation IDs at `0`, verifies every returned ID directly, and rechecks that both parents remain `PAUSED`. It intentionally leaves the created keywords for owner inspection.
+
 Destructive acceptance is never automatic. It requires freshly created, clearly named `PAUSED` fixtures, profile `allowDeletes: true`, both server flags, the session delete variable, and the exact confirmation value used by the dedicated live test. Never point it at an existing business campaign.

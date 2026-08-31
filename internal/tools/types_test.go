@@ -1,12 +1,15 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/zelentsov-dev/apple-ads-mcp/internal/appleads"
+	"github.com/zelentsov-dev/apple-ads-mcp/internal/operations"
 )
 
 func TestQueryInputBoundedRequestNormalizesAdamIDs(t *testing.T) {
@@ -145,6 +148,7 @@ func TestAppleAPIErrorOutputRemainsStructured(t *testing.T) {
 		Details: map[string]any{
 			"details": []any{map[string]any{"code": "INVALID", "message": "Invalid filter"}},
 		},
+		Body: map[string]any{"code": "INVALID_VALUE", "message": "Invalid selector value"},
 	})
 	if output.Error == nil || output.Error.Type != "apple_api_error" || output.Error.HTTPStatus != 400 || output.Error.Code != "INVALID_VALUE" {
 		t.Fatalf("output=%#v", output)
@@ -154,6 +158,42 @@ func TestAppleAPIErrorOutputRemainsStructured(t *testing.T) {
 	}
 	if output.Error.Message != "Invalid selector value" || output.Error.Details == nil || output.Error.ResponseFormat != "non_json" {
 		t.Fatalf("structured diagnostics missing: %#v", output.Error)
+	}
+}
+
+func TestFailureTextMatchesStructuredDiagnostics(t *testing.T) {
+	output := errorOutput(writeGateError("SERVER_READ_ONLY", "server is in read-only mode; restart with --allow-writes", "restart with explicit authorization"))
+	result := failureTextResult(output.Summary, output.Error)
+	content, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("content=%T", result.Content[0])
+	}
+	var decoded Output
+	if err := json.Unmarshal([]byte(content.Text), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decoded.Error, output.Error) || decoded.Summary != output.Summary || !result.IsError {
+		t.Fatalf("text=%+v structured=%+v", decoded, output)
+	}
+}
+
+func TestReceiptAndDriftErrorsHaveStableTypes(t *testing.T) {
+	tests := []struct {
+		err      error
+		wantType string
+	}{
+		{operations.ErrReceiptExpired, "receipt_expired"},
+		{operations.ErrReceiptUsed, "receipt_used"},
+		{operations.ErrReceiptNotFound, "receipt_not_found"},
+		{operations.ErrStateDrift, "state_drift"},
+		{context.DeadlineExceeded, "transport_error"},
+		{&appleads.AmbiguousWriteError{Cause: context.DeadlineExceeded}, "ambiguous_write"},
+	}
+	for _, test := range tests {
+		output := errorOutput(test.err)
+		if output.Error == nil || output.Error.Type != test.wantType || output.Error.Code == "" || output.Error.Hint == "" {
+			t.Fatalf("err=%v output=%+v", test.err, output)
+		}
 	}
 }
 

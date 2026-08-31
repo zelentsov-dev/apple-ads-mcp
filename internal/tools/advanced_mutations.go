@@ -69,7 +69,7 @@ func (s *Service) optimizationPlanPreview(store *operations.Store) func(context.
 		if err := s.writeAllowed(ctx, input.Profile, input.AdAccountID); err != nil {
 			return failedPreview(err)
 		}
-		now := time.Now()
+		now := s.nowUTC()
 		evidence, _, err := s.optimizationEvidence(ctx, policy, now)
 		if err != nil {
 			return failedPreview(err)
@@ -102,7 +102,13 @@ func (s *Service) optimizationPlanPreview(store *operations.Store) func(context.
 			key := resource + "/" + action.ResourceID
 			if _, exists := seenReads[key]; !exists {
 				read, _ := appleads.ResourceGet(resource, action.ResourceID)
-				verify = append(verify, operations.VerificationRead{Name: strings.ReplaceAll(key, "/", "_"), Operation: read})
+				impact, err := s.resourceImpact(ctx, input.AccountInput, resource, action.ResourceID, payload, false)
+				if err != nil {
+					return failedPreview(err)
+				}
+				scopes := resourceMutationScopes(resource, impact, payload, false)
+				scopes = append(scopes, operations.ObjectMutationScope(action.CampaignID))
+				verify = append(verify, operations.VerificationRead{Name: strings.ReplaceAll(key, "/", "_"), Operation: read, Scopes: scopes})
 				seenReads[key] = struct{}{}
 				targetIDs = append(targetIDs, action.ResourceID)
 			}
@@ -282,7 +288,7 @@ func (s *Service) sharedBudgetCreatePreview(store *operations.Store) func(contex
 			publicPayload["endTime"] = *input.EndTime
 			verificationPayload["endTime"] = *input.EndTime
 		}
-		preview, err := store.PreviewComposite(ctx, s.manager, input.Profile, input.AdAccountID, "shared_budget_create", nil, publicPayload, []operations.VerificationRead{{Name: "shared_budget_inventory", Operation: verification}}, mutation, operations.PreviewOptions{Impact: &operations.OperationImpact{SpendAffecting: true, ObjectCount: 1, Currency: input.Value.Currency, PrivateHash: privateHash}, Create: &operations.CreateExpectation{Resource: "shared-budgets", Expected: verificationPayload}})
+		preview, err := store.PreviewComposite(ctx, s.manager, input.Profile, input.AdAccountID, "shared_budget_create", nil, publicPayload, []operations.VerificationRead{{Name: "shared_budget_inventory", Operation: verification, Scopes: []string{inventoryMutationScope("shared-budgets")}}}, mutation, operations.PreviewOptions{Impact: &operations.OperationImpact{SpendAffecting: true, ObjectCount: 1, Currency: input.Value.Currency, PrivateHash: privateHash}, Create: &operations.CreateExpectation{Resource: "shared-budgets", Expected: verificationPayload}})
 		if err != nil {
 			return failedPreview(err)
 		}
@@ -337,7 +343,7 @@ func (s *Service) sharedBudgetUpdatePreview(store *operations.Store) func(contex
 		}
 		verify, _ := appleads.ResourceGet("shared-budgets", input.SharedBudgetID)
 		mutation, _ := appleads.ResourceUpdate("shared-budgets", input.SharedBudgetID, payload)
-		preview, err := store.PreviewComposite(ctx, s.manager, input.Profile, input.AdAccountID, "shared_budget_update", []string{input.SharedBudgetID}, publicPayload, []operations.VerificationRead{{Name: "shared_budget", Operation: verify}}, mutation, operations.PreviewOptions{Impact: &operations.OperationImpact{SpendAffecting: input.Value != nil, ObjectCount: 1, PrivateHash: privateHash}})
+		preview, err := store.PreviewComposite(ctx, s.manager, input.Profile, input.AdAccountID, "shared_budget_update", []string{input.SharedBudgetID}, publicPayload, []operations.VerificationRead{{Name: "shared_budget", Operation: verify, Scopes: []string{inventoryMutationScope("shared-budgets")}}}, mutation, operations.PreviewOptions{Impact: &operations.OperationImpact{SpendAffecting: input.Value != nil, ObjectCount: 1, PrivateHash: privateHash}})
 		if err != nil {
 			return failedPreview(err)
 		}
@@ -374,7 +380,7 @@ func (s *Service) campaignSharedBudgetPreview(store *operations.Store, assign bo
 		if assign {
 			name = "campaign_shared_budget_assign"
 		}
-		return s.updatePreviewPayload(ctx, store, "campaigns", name, input.AccountInput, input.CampaignID, map[string]any{"sharedBudgets": sharedBudgets})
+		return s.updatePreviewPayloadWithScopes(ctx, store, "campaigns", name, input.AccountInput, input.CampaignID, map[string]any{"sharedBudgets": sharedBudgets}, []string{operations.ObjectMutationScope(input.SharedBudgetID)})
 	}
 }
 
@@ -507,27 +513,46 @@ func (s *Service) deleteInventory(ctx context.Context, account AccountInput, res
 	reads := []operations.VerificationRead{{Name: "target", Operation: currentOperation, ExpectDeleted: true}}
 	parentIDs := []string{}
 	cascadeCount := 1
-	queryRequest := func(name, childResource string, request map[string]any) error {
+	scopeSet := map[string]struct{}{}
+	scopes := make([]string, 0, 16)
+	addScope := func(scope string) {
+		if scope == "" {
+			return
+		}
+		if _, exists := scopeSet[scope]; exists {
+			return
+		}
+		scopeSet[scope] = struct{}{}
+		scopes = append(scopes, scope)
+	}
+	queryRequest := func(name, childResource string, request map[string]any, inventoryScopes ...string) ([]string, error) {
 		operation, _ := appleads.ResourceQuery(childResource, request)
 		result, err := s.manager.Do(ctx, account.Profile, account.AdAccountID, operation)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if result.Pagination.Total > MaxItems || result.Pagination.Next != "" {
-			return fmt.Errorf("%s cascade contains more than %d objects and cannot be safely bounded", name, MaxItems)
+			return nil, fmt.Errorf("%s cascade contains more than %d objects and cannot be safely bounded", name, MaxItems)
 		}
-		cascadeCount += len(collectFieldValues(result.Data, "id", MaxItems))
+		ids := collectFieldValues(result.Data, "id", MaxItems)
+		cascadeCount += len(ids)
 		if cascadeCount > MaxItems {
-			return fmt.Errorf("delete cascade contains more than %d objects and cannot be safely bounded", MaxItems)
+			return nil, fmt.Errorf("delete cascade contains more than %d objects and cannot be safely bounded", MaxItems)
+		}
+		for _, inventoryScope := range inventoryScopes {
+			addScope(inventoryScope)
+		}
+		for _, childID := range ids {
+			addScope(operations.ObjectMutationScope(childID))
 		}
 		reads = append(reads, operations.VerificationRead{Name: name, Operation: operation})
-		return nil
+		return ids, nil
 	}
-	query := func(name, childResource, field, value string) error {
+	query := func(name, childResource, field, value string, inventoryScopes ...string) ([]string, error) {
 		return queryRequest(name, childResource, map[string]any{
 			"filters":    []any{map[string]any{"field": field, "operator": "EQUALS", "value": wireID(value)}},
 			"pagination": map[string]any{"offset": 0, "pageSize": MaxItems},
-		})
+		}, inventoryScopes...)
 	}
 	requirePaused := func(campaignID string) error {
 		campaign, err := s.readResource(ctx, account, "campaigns", campaignID)
@@ -538,6 +563,7 @@ func (s *Service) deleteInventory(ctx context.Context, account AccountInput, res
 			return errors.New("destructive child operations require the parent campaign to be PAUSED")
 		}
 		parentIDs = append(parentIDs, campaignID)
+		addScope(operations.ObjectMutationScope(campaignID))
 		return nil
 	}
 	switch resource {
@@ -545,15 +571,25 @@ func (s *Service) deleteInventory(ctx context.Context, account AccountInput, res
 		if !strings.EqualFold(findStringField(current, "status"), "PAUSED") {
 			return nil, nil, 0, errors.New("campaign must be PAUSED before delete preview")
 		}
-		for _, child := range []struct{ name, resource string }{{"ad_groups", "adgroups"}, {"keywords", "keywords"}, {"ads", "ads"}} {
-			if err := query(child.name, child.resource, "campaignId", id); err != nil {
+		addScope(inventoryMutationScope("campaigns"))
+		adGroupIDs, err := query("ad_groups", "adgroups", "campaignId", id, inventoryMutationScope("adgroups", id))
+		if err != nil {
+			return nil, nil, 0, err
+		}
+		for _, adGroupID := range adGroupIDs {
+			for _, childResource := range []string{"keywords", "negative-keywords", "ads"} {
+				addScope(inventoryMutationScope(childResource, id, adGroupID))
+			}
+		}
+		for _, child := range []struct{ name, resource string }{{"keywords", "keywords"}, {"ads", "ads"}} {
+			if _, err := query(child.name, child.resource, "campaignId", id); err != nil {
 				return nil, nil, 0, err
 			}
 		}
-		if err := queryRequest("campaign_negative_keywords", "negative-keywords", scopeQuery("campaignId", id)); err != nil {
+		if _, err := queryRequest("campaign_negative_keywords", "negative-keywords", scopeQuery("campaignId", id), inventoryMutationScope("negative-keywords", id)); err != nil {
 			return nil, nil, 0, err
 		}
-		if err := queryRequest("ad_group_negative_keywords", "negative-keywords", map[string]any{
+		if _, err := queryRequest("ad_group_negative_keywords", "negative-keywords", map[string]any{
 			"filters": []any{
 				map[string]any{"field": "campaignId", "operator": "EQUALS", "value": wireID(id)},
 				map[string]any{"field": "adGroupId", "operator": "IS_NOT_NULL"},
@@ -567,8 +603,9 @@ func (s *Service) deleteInventory(ctx context.Context, account AccountInput, res
 		if err := requirePaused(campaignID); err != nil {
 			return nil, nil, 0, err
 		}
+		addScope(inventoryMutationScope("adgroups", campaignID))
 		for _, child := range []struct{ name, resource string }{{"keywords", "keywords"}, {"negative_keywords", "negative-keywords"}, {"ads", "ads"}} {
-			if err := query(child.name, child.resource, "adGroupId", id); err != nil {
+			if _, err := query(child.name, child.resource, "adGroupId", id, inventoryMutationScope(child.resource, campaignID, id)); err != nil {
 				return nil, nil, 0, err
 			}
 		}
@@ -579,9 +616,12 @@ func (s *Service) deleteInventory(ctx context.Context, account AccountInput, res
 			return nil, nil, 0, err
 		}
 		parentIDs = append(parentIDs, adGroupID)
-		if err := requirePaused(findStringField(adGroup, "campaignId")); err != nil {
+		addScope(operations.ObjectMutationScope(adGroupID))
+		campaignID := findStringField(adGroup, "campaignId")
+		if err := requirePaused(campaignID); err != nil {
 			return nil, nil, 0, err
 		}
+		addScope(inventoryMutationScope("keywords", campaignID, adGroupID))
 	case "ads":
 		defaultProductPage := containsStringValue(current, "DEFAULT_PRODUCT_PAGE")
 		creativeID := findStringField(current, "creativeId")
@@ -604,13 +644,16 @@ func (s *Service) deleteInventory(ctx context.Context, account AccountInput, res
 			return nil, nil, 0, err
 		}
 		parentIDs = append(parentIDs, adGroupID)
-		if err := requirePaused(findStringField(adGroup, "campaignId")); err != nil {
+		addScope(operations.ObjectMutationScope(adGroupID))
+		campaignID := findStringField(adGroup, "campaignId")
+		if err := requirePaused(campaignID); err != nil {
 			return nil, nil, 0, err
 		}
+		addScope(inventoryMutationScope("ads", campaignID, adGroupID))
 	case "negative-keywords":
 		campaignID := findStringField(current, "campaignId")
+		adGroupID := findStringField(current, "adGroupId")
 		if campaignID == "" {
-			adGroupID := findStringField(current, "adGroupId")
 			adGroup, err := s.readResource(ctx, account, "adgroups", adGroupID)
 			if err != nil {
 				return nil, nil, 0, err
@@ -618,9 +661,17 @@ func (s *Service) deleteInventory(ctx context.Context, account AccountInput, res
 			parentIDs = append(parentIDs, adGroupID)
 			campaignID = findStringField(adGroup, "campaignId")
 		}
+		if adGroupID != "" {
+			addScope(operations.ObjectMutationScope(adGroupID))
+		}
 		if err := requirePaused(campaignID); err != nil {
 			return nil, nil, 0, err
 		}
+		parents := []string{campaignID}
+		if adGroupID != "" {
+			parents = append(parents, adGroupID)
+		}
+		addScope(inventoryMutationScope("negative-keywords", parents...))
 	case "creatives":
 		if containsStringValue(current, "DEFAULT_PRODUCT_PAGE") {
 			return nil, nil, 0, errors.New("not_eligible: Apple does not allow deleting the Default Product Page creative")
@@ -636,6 +687,7 @@ func (s *Service) deleteInventory(ctx context.Context, account AccountInput, res
 		if len(collectFieldValues(result.Data, "id", MaxItems)) > 0 {
 			return nil, nil, 0, errors.New("creative is still referenced by one or more ads")
 		}
+		addScope(inventoryMutationScope("creatives"))
 		reads = append(reads, operations.VerificationRead{Name: "referencing_ads", Operation: operation})
 	case "shared-budgets":
 		operation, _ := appleads.ResourceQuery("campaigns", map[string]any{
@@ -654,8 +706,10 @@ func (s *Service) deleteInventory(ctx context.Context, account AccountInput, res
 			}
 			return nil, nil, 0, errors.New("shared budget is still assigned to one or more campaigns")
 		}
+		addScope(inventoryMutationScope("shared-budgets"))
 		reads = append(reads, operations.VerificationRead{Name: "assigned_campaigns", Operation: operation})
 	}
+	reads[0].Scopes = scopes
 	return reads, parentIDs, cascadeCount, nil
 }
 

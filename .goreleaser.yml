@@ -51,11 +51,13 @@ release:
   mode: replace
   make_latest: true
   header: |
-    Apple Ads MCP {{ .Tag }} is a packaging-only release that places the semantic version at the end of release archive names so Homebrew cannot infer `64` from the `arm64` suffix.
+    Apple Ads MCP {{ .Tag }} adds typed, actionable diagnostics across text and structured MCP results. Apple `4xx` details are bounded and sanitized, write gates explain how to opt in safely, and receipt failures now distinguish expired, used, missing, drifted, transport, and ambiguous outcomes.
 
-    The release does not change MCP tool names or schemas. It keeps the v0.3.4 formula-scoped trust gate for Homebrew 6, the v0.3.3 exact-path formula verification, and the v0.3.2 one-command Homebrew onboarding path. The release gate now verifies Homebrew's resolved formula version before installation. Manual downloads use the new `apple-ads-mcp_<os>_<arch>_<version>` archive names.
+    Targeting-keyword bulk creation now supports zero-based integer correlation IDs and one aggregate receipt across one or more ad groups. Successful item IDs are preserved and verified directly, partial Apple failures remain visible, and semantic object, inventory, relationship, and cascade reservations prevent overlapping mutations from dispatching against stale state.
 
-    The server remains read-only by default, has no scheduler, never retries ambiguous mutations, keeps billing PII local, and never exposes a raw HTTP passthrough. Known upstream errors from phrase/category suggestions and impression share remain visible as structured Apple errors and are not reported as successful responses.
+    Read tools keep compatible legacy inputs while adding named ID aliases, typed query shortcuts, stricter keyword scopes, zero-metric reports, bounded change-history windows, compact locale output, exact Unicode owned-app fallback, and section-level opportunity diagnostics. Impression-share Apple errors remain honest upstream failures, and empty Search Results ad inventories are explained without synthesizing objects.
+
+    Tool names remain stable. Existing `id`, advanced `filters`, and top-level keyword bulk `adGroupId` inputs remain supported. See `docs/MIGRATION-v0.3.6.md` for the complete compatibility and migration contract.
   footer: |
     Archives include SHA-256 checksums and SPDX SBOMs. See the README for installation, Apple Ads onboarding, safety controls, and known platform behavior.
 

@@ -76,7 +76,7 @@ func MutationSpecs() []Spec {
 		{Name: "ad_resume_preview", Description: "Preview resuming one ad.", Class: "mutation_preview"},
 		{Name: "creative_create_preview", Description: "Preview creation of one creative.", Class: "mutation_preview"},
 		{Name: "creative_update_preview", Description: "Preview a creative update.", Class: "mutation_preview"},
-		{Name: "keywords_bulk_create_preview", Description: "Preview up to 100 targeting keyword creates as one drift-bound operation.", Class: "mutation_preview"},
+		{Name: "keywords_bulk_create_preview", Description: "Preview up to 100 same- or cross-group keyword creates as one Apple bulk request and aggregate receipt.", Class: "mutation_preview"},
 		{Name: "keywords_bulk_update_preview", Description: "Preview up to 100 targeting keyword updates as one drift-bound operation.", Class: "mutation_preview"},
 		{Name: "negative_keywords_bulk_create_preview", Description: "Preview up to 100 negative keyword creates in one scope.", Class: "mutation_preview"},
 		{Name: "negative_keywords_bulk_update_preview", Description: "Preview up to 100 negative keyword updates in one scope.", Class: "mutation_preview"},
@@ -124,9 +124,12 @@ func (s *Service) RegisterMutationTools(server *mcp.Server, store *operations.St
 		Name: "operations_apply", Description: mutationSpec("operations_apply").Description,
 		Annotations: &mcp.ToolAnnotations{Title: "apply operation", ReadOnlyHint: false, IdempotentHint: false, DestructiveHint: &destructive, OpenWorldHint: &open},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input ReceiptInput) (*mcp.CallToolResult, ApplyOutput, error) {
-		preview, _, err := store.Inspect(input.Receipt)
+		preview, used, err := store.Inspect(input.Receipt)
 		if err != nil {
 			return failedApply(err)
+		}
+		if used {
+			return failedApply(operations.ErrReceiptUsed)
 		}
 		if err := s.writeAllowed(ctx, preview.Profile, preview.AdAccountID); err != nil {
 			return failedApply(err)
@@ -163,7 +166,12 @@ func (s *Service) RegisterMutationTools(server *mcp.Server, store *operations.St
 			summary += "; local optimization history could not be persisted, so this policy remains blocked until operations_verify records reconciliation"
 		}
 		output := ApplyOutput{Summary: summary, Receipt: &receipt}
-		return textResult(summary, receipt.Status == "unknown"), output, nil
+		if receipt.Status == "unknown" {
+			diagnostic := classifyError(&appleads.AmbiguousWriteError{Cause: errors.New("Apple Ads mutation did not return a confirmed response")})
+			output.Error = &diagnostic
+			return failureTextResult(summary, output.Error), output, nil
+		}
+		return textResult(summary, false), output, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -259,7 +267,7 @@ func (s *Service) createPreviewPayload(ctx context.Context, store *operations.St
 	if err != nil {
 		return failedPreview(err)
 	}
-	preview, err := store.PreviewComposite(ctx, s.manager, account.Profile, account.AdAccountID, name, nil, payload, []operations.VerificationRead{{Name: "affected_inventory", Operation: verify}}, mutation, operations.PreviewOptions{Impact: impact, Create: &operations.CreateExpectation{Resource: resource, Expected: payload}})
+	preview, err := store.PreviewComposite(ctx, s.manager, account.Profile, account.AdAccountID, name, nil, payload, []operations.VerificationRead{{Name: "affected_inventory", Operation: verify, Scopes: resourceMutationScopes(resource, impact, payload, true)}}, mutation, operations.PreviewOptions{Impact: impact, Create: &operations.CreateExpectation{Resource: resource, Expected: payload}})
 	if err != nil {
 		return failedPreview(err)
 	}
@@ -301,6 +309,10 @@ func wireID(value string) any {
 }
 
 func (s *Service) updatePreviewPayload(ctx context.Context, store *operations.Store, resource, name string, account AccountInput, id string, payload map[string]any) (*mcp.CallToolResult, PreviewOutput, error) {
+	return s.updatePreviewPayloadWithScopes(ctx, store, resource, name, account, id, payload, nil)
+}
+
+func (s *Service) updatePreviewPayloadWithScopes(ctx context.Context, store *operations.Store, resource, name string, account AccountInput, id string, payload map[string]any, extraScopes []string) (*mcp.CallToolResult, PreviewOutput, error) {
 	if err := validateTypedResourcePayload(resource, false, payload); err != nil {
 		return failedPreview(err)
 	}
@@ -322,7 +334,9 @@ func (s *Service) updatePreviewPayload(ctx context.Context, store *operations.St
 	if err != nil {
 		return failedPreview(err)
 	}
-	preview, err := store.PreviewComposite(ctx, s.manager, account.Profile, account.AdAccountID, name, []string{id}, payload, []operations.VerificationRead{{Name: "current", Operation: verify}}, mutation, operations.PreviewOptions{Impact: impact})
+	scopes := resourceMutationScopes(resource, impact, payload, false)
+	scopes = append(scopes, extraScopes...)
+	preview, err := store.PreviewComposite(ctx, s.manager, account.Profile, account.AdAccountID, name, []string{id}, payload, []operations.VerificationRead{{Name: "current", Operation: verify, Scopes: scopes}}, mutation, operations.PreviewOptions{Impact: impact})
 	if err != nil {
 		return failedPreview(err)
 	}
@@ -440,15 +454,8 @@ func validateMutationValue(value any, depth int) error {
 }
 
 func (s *Service) writeAllowed(ctx context.Context, profileName, adAccountID string) error {
-	if !s.allowWrites {
-		return errors.New("server is read-only; restart with --allow-writes")
-	}
-	profile, err := s.manager.Profile(profileName)
-	if err != nil {
+	if err := s.localWriteAllowed(profileName); err != nil {
 		return err
-	}
-	if !profile.AllowWrites {
-		return fmt.Errorf("profile %q does not allow writes", profile.Name)
 	}
 	result, err := s.manager.Do(ctx, profileName, "", appleads.ACLs())
 	if err != nil {
@@ -456,29 +463,43 @@ func (s *Service) writeAllowed(ctx context.Context, profileName, adAccountID str
 	}
 	roles, found := accountRoles(result.Data, adAccountID)
 	if !found {
-		return fmt.Errorf("ad account %q is not present in the profile ACL", adAccountID)
+		return writeGateError("ACCOUNT_NOT_IN_ACL", fmt.Sprintf("ad account %q is not present in the profile ACL", adAccountID), "select an ad account visible to the current profile")
 	}
 	for _, role := range roles {
 		if isWriteRole(role) {
 			return nil
 		}
 	}
-	return fmt.Errorf("ad account %q ACL from Apple has no recognized write role; roles: %s", adAccountID, strings.Join(roles, ", "))
+	return writeGateError("APPLE_ROLE_READ_ONLY", fmt.Sprintf("ad account %q ACL from Apple has no recognized write role; roles: %s", adAccountID, strings.Join(roles, ", ")), "use an Apple Ads API role with write permission")
+}
+
+func (s *Service) localWriteAllowed(profileName string) error {
+	if !s.allowWrites {
+		return writeGateError("SERVER_READ_ONLY", "server is in read-only mode; restart with --allow-writes", "restart this server with --allow-writes only for an explicitly authorized mutation session")
+	}
+	profile, err := s.manager.Profile(profileName)
+	if err != nil {
+		return err
+	}
+	if !profile.AllowWrites {
+		return writeGateError("PROFILE_READ_ONLY", fmt.Sprintf("profile %q does not allow writes", profile.Name), "enable allowWrites for the selected profile only for an explicitly authorized mutation session")
+	}
+	return nil
 }
 
 func (s *Service) deleteAllowed(ctx context.Context, profileName, adAccountID string) error {
 	if !s.allowDeletes {
-		return errors.New("destructive operations are disabled; restart with --allow-deletes")
+		return writeGateError("SERVER_DELETES_DISABLED", "destructive operations are disabled; restart with --allow-deletes", "restart this server with --allow-deletes only for an explicitly authorized destructive session")
 	}
 	if !strings.EqualFold(strings.TrimSpace(os.Getenv("APPLE_ADS_ALLOW_DELETES")), "true") {
-		return errors.New("destructive operations require APPLE_ADS_ALLOW_DELETES=true for this session")
+		return writeGateError("SESSION_DELETES_DISABLED", "destructive operations require APPLE_ADS_ALLOW_DELETES=true for this session", "set the session-only delete gate only for an explicitly authorized destructive operation")
 	}
 	profile, err := s.manager.Profile(profileName)
 	if err != nil {
 		return err
 	}
 	if !profile.AllowDeletes {
-		return fmt.Errorf("profile %q does not allow deletes", profile.Name)
+		return writeGateError("PROFILE_DELETES_DISABLED", fmt.Sprintf("profile %q does not allow deletes", profile.Name), "enable allowDeletes only on the explicitly selected profile")
 	}
 	return s.writeAllowed(ctx, profileName, adAccountID)
 }
@@ -971,6 +992,51 @@ func (s *Service) resourceImpact(ctx context.Context, account AccountInput, reso
 	return impact, nil
 }
 
+func resourceMutationScopes(resource string, impact *operations.OperationImpact, payload map[string]any, create bool) []string {
+	if impact == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	scopes := make([]string, 0, 4)
+	add := func(scope string) {
+		if scope == "" {
+			return
+		}
+		if _, exists := seen[scope]; exists {
+			return
+		}
+		seen[scope] = struct{}{}
+		scopes = append(scopes, scope)
+	}
+	parentCount := 0
+	switch resource {
+	case "campaigns", "creatives":
+		if create {
+			add(inventoryMutationScope(resource))
+		}
+	case "adgroups":
+		parentCount = 1
+	case "keywords", "ads":
+		parentCount = 2
+	case "negative-keywords":
+		parentCount = len(impact.ParentIDs)
+	}
+	if parentCount > 0 && len(impact.ParentIDs) >= parentCount {
+		add(inventoryMutationScope(resource, impact.ParentIDs[:parentCount]...))
+	}
+	for _, field := range []string{"creativeId", "budgetId"} {
+		for _, id := range collectFieldValues(payload, field, MaxItems) {
+			add(operations.ObjectMutationScope(id))
+		}
+	}
+	return scopes
+}
+
+func inventoryMutationScope(resource string, parentIDs ...string) string {
+	parts := append([]string{"inventory", resource}, parentIDs...)
+	return operations.MutationScope(parts...)
+}
+
 func (s *Service) parentID(ctx context.Context, account AccountInput, resource, id string, payload map[string]any, field string, create bool) (string, error) {
 	if create {
 		value := stringField(payload, field)
@@ -1109,13 +1175,13 @@ func previewSuccess(preview operations.OperationPreview) (*mcp.CallToolResult, P
 func failedPreview(err error) (*mcp.CallToolResult, PreviewOutput, error) {
 	failure := errorOutput(err)
 	output := PreviewOutput{Summary: failure.Summary, Error: failure.Error}
-	return textResult(output.Summary, true), output, nil
+	return failureTextResult(output.Summary, output.Error), output, nil
 }
 
 func failedApply(err error) (*mcp.CallToolResult, ApplyOutput, error) {
 	failure := errorOutput(err)
 	output := ApplyOutput{Summary: failure.Summary, Error: failure.Error}
-	return textResult(output.Summary, true), output, nil
+	return failureTextResult(output.Summary, output.Error), output, nil
 }
 
 func mutationSpec(name string) Spec {

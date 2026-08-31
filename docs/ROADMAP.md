@@ -15,6 +15,7 @@ Account mutation, Apple Maps, and legacy v5 remain intentionally unavailable.
 - One composite receipt applies up to 100 ordered actions with full drift checks, dependencies, partial outcomes, and no retry or rollback.
 - Typed shared-budget create/update/assign/unassign supports eligible `LOC` accounts while private billing PII stays local.
 - Separately gated lifecycle tools require exact expected text, PAUSED parents, bounded cascade inventory, and post-delete verification.
+- v0.3.6 adds typed diagnostics, bounded expired-receipt tombstones, canonical object/inventory/cascade reservations across every receipt producer, aggregate cross-group keyword bulk receipts, complete keyword inventory guidance, and stricter typed read contracts.
 
 There is no scheduler, background spending, automatic recommendation apply, or optimizer-generated deletion.
 

@@ -56,7 +56,9 @@ Other useful read-only starters:
 
 ## Current release
 
-`v0.3.5` is the current release. Its archive names end with the semantic version so Homebrew cannot infer `64` from the `arm64` suffix. This packaging-only fix does not change MCP tool names or schemas. Formula-scoped trust for Homebrew 6 from v0.3.4, exact-path verification from v0.3.3, and one-command onboarding from v0.3.2 remain intact.
+`v0.3.6` is the current release. It adds typed actionable diagnostics, fixes Apple keyword bulk creation with zero-based integer correlation IDs and one aggregate cross-group receipt, and tightens read/query contracts without removing legacy `id`, `filters`, or top-level bulk `adGroupId` inputs. See the [v0.3.6 release and migration notes](docs/MIGRATION-v0.3.6.md).
+
+The v0.3.5 version-final archive naming, formula-scoped trust from v0.3.4, exact-path verification from v0.3.3, and one-command onboarding from v0.3.2 remain intact.
 
 Optimization is never autonomous: the server has no scheduler and never changes spend in the background. A read-only session can build a baseline and plan. Applying a plan still requires every write gate, an active named policy, one receipt, a fresh report and inventory drift check, and item-level verification.
 
@@ -106,7 +108,9 @@ A write is possible only when all gates pass:
 5. `operations_apply` receives the same unexpired receipt.
 6. The affected inventory still matches the state captured during preview.
 
-Preview receipts expire after ten minutes and are single-use for apply. Bulk receipts bind the entire inventory snapshot and return item-level `applied`, `failed`, or `unknown` states. Apple may partially accept a batch; the server never promises rollback. If an optimization apply has an unresolved outcome, a sanitized recovery recipe remains in owner-only local history so `operations_verify` can reconcile the supplied receipt after a process restart or normal preview eviction.
+Preview receipts expire after ten minutes and are single-use for apply. A bounded tombstone preserves the explicit expired state after the full receipt record is pruned. Every mutation receipt binds canonical object scopes for its target IDs and retains exact read fingerprints; creates and parent deletes also bind the affected inventory and bounded cascade scopes. Generic, bulk, delete, recommendation, shared-budget, and optimization verification shapes for overlapping objects therefore cannot dispatch concurrently. Independent ad-group inventories remain parallel. Bulk receipts return item-level `applied`, `failed`, or `unknown` states. One targeting-keyword bulk receipt may contain multiple per-item ad groups while still sending one Apple bulk request. Apple may partially accept a batch; the server never promises rollback. If an optimization apply has an unresolved outcome, a sanitized recovery recipe remains in owner-only local history so `operations_verify` can reconcile the supplied receipt after a process restart or normal preview eviction.
+
+Independent previews from the same inventory snapshot intentionally drift after the first apply. Put related keyword creates into one bulk preview when they must be applied as a unit; the server does not weaken this fail-closed invariant.
 
 Mutation requests are not retried after a timeout. The result is `committed_unverified`, or item-level `unknown`, until `operations_verify` and direct readback establish the actual state.
 
@@ -116,9 +120,11 @@ An irreversible delete has five additional gates: `--allow-deletes`, profile `al
 
 ## Release validation
 
-The v0.3 release candidate passed the complete v0.2 compatibility suite, MCP stdio contract tests, unit and HTTP tests, the race detector, static analysis, distribution validation, and owner-controlled live acceptance against Apple Ads API v1.
+The v0.3.6 release requires the complete compatibility suite, MCP stdio contract tests, unit and HTTP tests, the race detector, static analysis, vulnerability and secret scans, and distribution validation. Cross-platform CI runs on macOS, Linux, and Windows.
 
-Live acceptance confirmed read-only optimization baselines and plans, `PAUSED` fixture creation and readback, budget/bid/strategy updates, pause/resume, receipt drift checks, item verification, and deletion of disposable campaigns, ad groups, keywords, and negative keywords. All retained fixtures remained `PAUSED` with zero spend.
+Runtime confirmation is a separate owner-controlled gate. On 2026-08-31, the v0.3.6 P2 read-only matrix and a separately authorized `PAUSED` targeting-keyword bulk fixture with 2 and 28 items passed against Apple Ads API v1. Both aggregate receipts applied and verified every returned keyword ID directly; the campaign and ad group remained `PAUSED` throughout the write acceptance.
+
+Earlier v0.3.x live acceptance confirmed read-only optimization baselines and plans, `PAUSED` fixture creation and readback, budget/bid/strategy updates, pause/resume, receipt drift checks, item verification, and deletion of disposable campaigns, ad groups, keywords, and negative keywords. All retained fixtures remained `PAUSED` with zero spend. This historical evidence does not replace the new v0.3.6 bulk/P2 acceptance gate.
 
 Account-dependent paths have an explicit evidence boundary:
 
@@ -158,10 +164,10 @@ Download the archive for your platform from [GitHub Releases](https://github.com
 Apple silicon example:
 
 ```bash
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.5/apple-ads-mcp_darwin_arm64_0.3.5.tar.gz
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.5/checksums.txt
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.6/apple-ads-mcp_darwin_arm64_0.3.6.tar.gz
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.6/checksums.txt
 shasum -a 256 -c checksums.txt --ignore-missing
-tar -xzf apple-ads-mcp_darwin_arm64_0.3.5.tar.gz
+tar -xzf apple-ads-mcp_darwin_arm64_0.3.6.tar.gz
 sudo install -m 0755 apple-ads-mcp /usr/local/bin/apple-ads-mcp
 ```
 
@@ -170,7 +176,7 @@ Windows users should verify `checksums.txt`, extract the matching ZIP, and regis
 ### OCI image
 
 ```bash
-docker pull ghcr.io/zelentsov-dev/apple-ads-mcp:0.3.5
+docker pull ghcr.io/zelentsov-dev/apple-ads-mcp:0.3.6
 ```
 
 The image runs `serve --stdio` by default. Mount `accounts.json` and its referenced private key read-only.
@@ -382,11 +388,11 @@ As of 2026-08-25, the documented v1 request shapes used by this server have prod
 - `phrase_suggestions` and `category_suggestions` may return Apple HTTP `500` for a `SUGGESTION` query even when `keyword_suggestions` and `target_cpa_suggestions` work for the same owned app.
 - `impression_share` may return Apple HTTP `400` on a cold or fully paused account. An owner-controlled acceptance account supplied no code or diagnostic details; public reproductions have also reported code `INVALID_VALUE`. Missing recent delivery may be relevant, but it is not a confirmed Apple prerequisite or workaround.
 
-The server returns these as bounded structured Apple errors, including whether the upstream body was empty or non-JSON; it does not convert them into empty or successful results. The request shapes match the [current Apple Ads Platform API](https://developer.apple.com/documentation/apple-ads-platform-api) and the [official Apple Java client](https://github.com/apple/apple-ads-platform-api-java). Comparable public v1 reproductions are recorded in [App Store Connect CLI PR #2057](https://github.com/rorkai/App-Store-Connect-CLI/pull/2057) and [PR #2020](https://github.com/rorkai/App-Store-Connect-CLI/pull/2020). Recheck after Apple changes the API or the account has meaningful delivery history.
+The server returns these as bounded structured Apple errors and does not convert them into empty or successful results. Safe Apple code, message, and detail fields are retained for `4xx`; request bodies, credentials, arbitrary fields, and `5xx` bodies are not returned. The request shapes match the [current Apple Ads Platform API](https://developer.apple.com/documentation/apple-ads-platform-api) and the [official Apple Java client](https://github.com/apple/apple-ads-platform-api-java). Comparable public v1 reproductions are recorded in [App Store Connect CLI PR #2057](https://github.com/rorkai/App-Store-Connect-CLI/pull/2057) and [PR #2020](https://github.com/rorkai/App-Store-Connect-CLI/pull/2020). Recheck after Apple changes the API or the account has meaningful delivery history.
 
 ## Compatibility
 
-v0.3 preserves all v0.2.1 tool names and schemas, then adds optimization, shared-budget mutation, bid-strategy, and lifecycle tools. v0.3.1 adds a required `maxBid` when bid permission is enabled and fail-closed reconciliation rules; see the [v0.3.1 migration notes](docs/MIGRATION-v0.3.1.md). v0.3.2 changes distribution and onboarding only. v0.3.3 switches release verification to the exact tap formula path, v0.3.4 adds formula-scoped trust for Homebrew 6, and v0.3.5 disambiguates Homebrew version detection by placing the semantic version at the end of archive names. None of these packaging releases changes MCP tool names or schemas. Older clients should also read the [v0.3 notes](docs/MIGRATION-v0.3.md) and [v0.2 notes](docs/MIGRATION-v0.2.md).
+v0.3 preserves all v0.2.1 tool names and schemas, then adds optimization, shared-budget mutation, bid-strategy, and lifecycle tools. v0.3.1 adds a required `maxBid` when bid permission is enabled and fail-closed reconciliation rules; see the [v0.3.1 migration notes](docs/MIGRATION-v0.3.1.md). v0.3.2 changes distribution and onboarding only. v0.3.3 switches release verification to the exact tap formula path, v0.3.4 adds formula-scoped trust for Homebrew 6, and v0.3.5 disambiguates Homebrew version detection by placing the semantic version at the end of archive names. v0.3.6 keeps existing tool names and compatible legacy inputs while adding typed aliases, query shortcuts, diagnostics, and stricter required scopes; see the [v0.3.6 notes](docs/MIGRATION-v0.3.6.md). Older clients should also read the [v0.3 notes](docs/MIGRATION-v0.3.md) and [v0.2 notes](docs/MIGRATION-v0.2.md).
 
 The public tool schema is not frozen before v1.0. API-family scope and operation status are tracked in the [machine-readable operation matrix](api-contract/operations.json). The official Java client baseline and App Store endpoint inventory are tracked in [upstream-baseline.json](api-contract/upstream-baseline.json).
 

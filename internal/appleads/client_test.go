@@ -120,6 +120,9 @@ func TestAppleErrorAndMalformedJSON(t *testing.T) {
 		if apiErr.Message != "role missing" {
 			t.Fatalf("message=%q", apiErr.Message)
 		}
+		if apiErr.Body == nil || apiErr.Body["code"] != "FORBIDDEN" || apiErr.Body["message"] != "role missing" {
+			t.Fatalf("safe 4xx body=%#v", apiErr.Body)
+		}
 		details, ok := apiErr.Details["details"].([]any)
 		if !ok || len(details) != 1 {
 			t.Fatalf("details=%#v", apiErr.Details)
@@ -144,6 +147,9 @@ func TestAppleErrorAndMalformedJSON(t *testing.T) {
 		if _, exists := apiErr.Details["details"]; exists {
 			t.Fatalf("server details leaked: %#v", apiErr.Details)
 		}
+		if apiErr.Body != nil {
+			t.Fatalf("server body leaked: %#v", apiErr.Body)
+		}
 	})
 	t.Run("client error diagnostics bounded", func(t *testing.T) {
 		details := make([]any, 25)
@@ -151,7 +157,10 @@ func TestAppleErrorAndMalformedJSON(t *testing.T) {
 			details[index] = map[string]any{
 				"code":    strings.Repeat("C", 140),
 				"message": "invalid\nvalue " + strings.Repeat("m", 1100),
-				"info":    map[string]any{"field\rname": strings.Repeat("v", 1100)},
+				"info": map[string]any{
+					"field":       strings.Repeat("v", 1100),
+					"requestBody": `{"authorization":"secret"}`,
+				},
 			}
 		}
 		err := apiError(http.StatusBadRequest, map[string]any{
@@ -175,8 +184,11 @@ func TestAppleErrorAndMalformedJSON(t *testing.T) {
 			t.Fatalf("detail not bounded: %#v", first)
 		}
 		info := first["info"].(map[string]string)
-		if _, exists := info["field name"]; !exists || len([]rune(info["field name"])) != 1024 {
+		if _, exists := info["field"]; !exists || len([]rune(info["field"])) != 1024 {
 			t.Fatalf("info not sanitized: %#v", info)
+		}
+		if _, exists := info["requestBody"]; exists {
+			t.Fatalf("request body leaked: %#v", info)
 		}
 	})
 	t.Run("malformed", func(t *testing.T) {

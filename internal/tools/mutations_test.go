@@ -91,6 +91,10 @@ func TestBulkScopeQueryBindsWholeInventory(t *testing.T) {
 	if !ok || filter["field"] != "adGroupId" || fmt.Sprint(filter["value"]) != "123" {
 		t.Fatalf("filter=%#v", filters[0])
 	}
+	pagination := request["pagination"].(map[string]any)
+	if pagination["fetchTotalCount"] != true {
+		t.Fatalf("pagination=%#v", pagination)
+	}
 	campaignRequest := scopeQuery("campaignId", "456")
 	campaignFilters := campaignRequest["filters"].([]any)
 	if len(campaignFilters) != 2 || campaignFilters[1].(map[string]any)["operator"] != "IS_NULL" {
@@ -110,14 +114,21 @@ func TestAdGroupCreateRequiresStartTime(t *testing.T) {
 
 func TestBulkAndRecommendationSafetyValidation(t *testing.T) {
 	seen := map[string]struct{}{}
-	if err := validateCorrelationID("1", seen); err != nil {
+	if _, _, err := validateCorrelationID("0", seen); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateCorrelationID("1", seen); err == nil {
+	if _, _, err := validateCorrelationID(0, seen); err == nil {
 		t.Fatal("expected duplicate correlationId rejection")
 	}
-	if err := validateCorrelationID("opaque", map[string]struct{}{}); err == nil {
+	if _, _, err := validateCorrelationID("opaque", map[string]struct{}{}); err == nil {
 		t.Fatal("expected non-numeric correlationId rejection")
+	}
+	seen = map[string]struct{}{}
+	if normalized, _, err := validateCorrelationID("001", seen); err != nil || normalized != "1" {
+		t.Fatalf("normalized=%q err=%v", normalized, err)
+	}
+	if _, _, err := validateCorrelationID(1, seen); err == nil {
+		t.Fatal("expected duplicate rejection after correlationId normalization")
 	}
 	if err := validateBulkCount(101); err == nil {
 		t.Fatal("expected bulk count rejection")

@@ -1,7 +1,7 @@
 {
   "apiFamily": "Apple Ads Platform API",
   "apiVersion": "v1",
-  "productVersion": "0.3.5",
+  "productVersion": "0.3.6",
   "legacyV5": false,
   "appleMaps": false,
   "maximumPageSize": 200,
@@ -17,19 +17,22 @@
       "area": "apps-metadata-eligibility",
       "paths": ["GET /search/apps", "GET /apps/{adamId}", "POST /eligibilities/apps/query", "POST /apps/{adamId}/locale-details/query", "POST /metadata/apps/supported-languages/query", "GET|POST /search/geo"],
       "classification": "read",
-      "status": "implemented"
+      "status": "implemented",
+      "constraints": ["Unicode owned-app fallback is exact and bounded", "locale details are compact by default", "full locale assets require one languageCode"]
     },
     {
       "area": "diagnostics-history",
       "paths": ["POST /rejection-reasons/apps/query", "GET /rejection-reasons/apps/{id}", "POST /change-history/query", "GET /change-history/{id}", "GET /campaigns/{id}/legacy-app-limited-status-reason-details"],
       "classification": "read",
-      "status": "implemented"
+      "status": "implemented-with-typed-window",
+      "constraints": ["change history requires start and end", "eventTime uses BETWEEN", "typed audit filters preserve Apple string IDs", "metadata defaults to latest"]
     },
     {
       "area": "inventory-query",
       "paths": ["POST /campaigns/query", "POST /adgroups/query", "POST /keywords/query", "POST /negative-keywords/query", "POST /ads/query", "POST /creatives/query", "POST /shared-budgets/query"],
       "classification": "read",
-      "status": "implemented"
+      "status": "implemented-with-typed-scopes",
+      "constraints": ["resource-specific ID aliases remain compatible with legacy id", "keyword queries require an explicit inventory scope", "keyword and negative-keyword filters use endpoint-specific field/operator/value matrices", "Apple string-prefix filtering uses STARTS_WITH", "shortcut and filter overlap is rejected"]
     },
     {
       "area": "suggestions-insights",
@@ -37,15 +40,17 @@
       "classification": "read",
       "status": "implemented",
       "knownLimitations": [
-        "Apple may return HTTP 500 for documented phrase and category SUGGESTION queries",
+        "Apple may return HTTP 500 for documented phrase and category SUGGESTION queries; app_opportunities preserves successful sections",
         "Apple may return HTTP 400 for impression share on accounts without recent delivery and may omit an error code or diagnostic details; public reproductions have also reported INVALID_VALUE, but the exact prerequisite is not documented"
-      ]
+      ],
+      "constraints": ["impression share uses a typed UTC request and does not synthesize success from Apple errors"]
     },
     {
       "area": "reports",
       "paths": ["POST /reports/apps/campaigns/query", "POST /reports/apps/adgroups/query", "POST /reports/apps/ads/query", "POST /reports/apps/keywords/query", "POST /reports/apps/searchterms/query"],
       "classification": "read",
-      "status": "implemented-with-typed-selectors"
+      "status": "implemented-with-typed-selectors",
+      "constraints": ["keyword_report can request EMPTY_METRICS with includeZeroMetrics", "keywords_query remains the inventory source of truth"]
     },
     {
       "area": "recommendations-read",
@@ -82,7 +87,8 @@
       "area": "bulk-keywords",
       "paths": ["POST /keywords/bulk-create", "POST /keywords/bulk-update", "POST /negative-keywords/bulk-create", "POST /negative-keywords/bulk-update"],
       "classification": "mutation",
-      "status": "receipt-gated-partial-aware"
+      "status": "receipt-gated-partial-aware",
+      "constraints": ["correlationId is a non-negative Apple integer", "one keyword create receipt may bind multiple exact campaign and ad-group scopes", "semantic inventory scopes conflict across generic, direct-ID, and bulk verification shapes", "one Apple bulk request preserves item-level failures and direct ID readback", "post-apply direct ID verification remains available after inventory grows beyond one page", "independent same-scope receipts fail closed after drift"]
     },
     {
       "area": "ads-creatives",
@@ -109,14 +115,14 @@
       "paths": ["PUT /campaigns/{id}", "PUT /adgroups/{id}", "PUT /keywords/{id}"],
       "classification": "mutation",
       "status": "composite-receipt-gated",
-      "constraints": ["maximum 20 campaigns", "maximum 100 actions", "full report and inventory drift check", "crash-durable sanitized recovery recipe", "restart-safe operations_verify", "independent confirmed 4xx may continue", "ambiguous result stops remaining actions", "no rollback or retry"]
+      "constraints": ["maximum 20 campaigns", "maximum 100 actions", "canonical object and inventory reservations shared with direct mutations", "full report and inventory drift check", "crash-durable sanitized recovery recipe", "restart-safe operations_verify", "independent confirmed 4xx may continue", "ambiguous result stops remaining actions", "no rollback or retry"]
     },
     {
       "area": "resource-lifecycle",
       "paths": ["DELETE /campaigns/{id}", "DELETE /adgroups/{id}", "DELETE /keywords/{id}", "DELETE /negative-keywords/{id}", "DELETE /ads/{id}", "DELETE /creatives/{id}", "DELETE /shared-budgets/{id}"],
       "classification": "destructive-mutation",
       "status": "separately-gated-receipt",
-      "constraints": ["expected name or text", "parent campaign must be PAUSED", "bounded cascade inventory hash", "creative reference check", "Default Product Page ads and creatives return not_eligible", "shared budget assignment check", "no retry after timeout"]
+      "constraints": ["expected name or text", "parent campaign must be PAUSED", "canonical target, inventory, and bounded cascade reservations", "bounded cascade inventory hash", "creative reference check", "Default Product Page ads and creatives return not_eligible", "shared budget assignment check", "no retry after timeout"]
     },
     {
       "area": "deferred-mutations",

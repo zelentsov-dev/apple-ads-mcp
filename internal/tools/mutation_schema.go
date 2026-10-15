@@ -16,6 +16,9 @@ func mutationInputSchema[In any](toolName string) *jsonschema.Schema {
 		panic(fmt.Sprintf("infer input schema for %s: %v", toolName, err))
 	}
 	applyMutationSchemaConstraints(schema, "", false)
+	if toolName == "ad_group_cpa_cap_preview" {
+		schema.Deprecated = true
+	}
 	if toolName == "campaign_create_preview" {
 		payload := schema.Properties["payload"]
 		if !slices.Contains(payload.Required, "bidStrategy") {
@@ -54,7 +57,7 @@ func applyMutationSchemaConstraints(schema *jsonschema.Schema, parentName string
 			*property = jsonschema.Schema{
 				Description: description,
 				OneOf: []*jsonschema.Schema{
-					{Type: "integer", Minimum: jsonschema.Ptr(0.0), ExclusiveMaximum: jsonschema.Ptr(math.Exp2(63))},
+					{Type: "integer", Minimum: jsonschema.Ptr(0.0), Maximum: jsonschema.Ptr(math.Exp2(53) - 1)},
 					{Type: "string", MinLength: jsonschema.Ptr(1), Pattern: `^[0-9]+$`},
 				},
 			}

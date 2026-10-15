@@ -2,13 +2,14 @@ package mcpserver
 
 import (
 	"context"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/zelentsov-dev/apple-ads-mcp/internal/appleads"
-	"github.com/zelentsov-dev/apple-ads-mcp/internal/config"
 	"io"
 	"math"
 	"reflect"
 	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/zelentsov-dev/apple-ads-mcp/internal/appleads"
+	"github.com/zelentsov-dev/apple-ads-mcp/internal/config"
 )
 
 func TestMCPMutationSchemasExposeWriteConstraints(t *testing.T) {
@@ -63,7 +64,7 @@ func TestMCPMutationSchemasExposeWriteConstraints(t *testing.T) {
 				t.Fatalf("oneOf=%v", node["oneOf"])
 			}
 			integer := branches[0].(map[string]any)
-			if integer["type"] != "integer" || integer["minimum"] != float64(0) || integer["exclusiveMaximum"] != math.Exp2(63) {
+			if integer["type"] != "integer" || integer["minimum"] != float64(0) || integer["maximum"] != math.Exp2(53)-1 {
 				t.Fatalf("integer branch=%v", integer)
 			}
 			decimalString := branches[1].(map[string]any)
@@ -100,6 +101,7 @@ func TestMCPMutationSchemasRejectInvalidArgumentsBeforeHandlers(t *testing.T) {
 	}{
 		{"active_status", "keyword_create_preview", keyword("ACTIVE", "")},
 		{"descriptive_correlation", "keywords_bulk_create_preview", bulk("k1")},
+		{"unsafe_numeric_correlation", "keywords_bulk_create_preview", bulk(uint64(1) << 53)},
 		{"zero_bid", "keyword_create_preview", keyword("PAUSED", "0")},
 		{"leading_zero_bid", "keyword_create_preview", keyword("PAUSED", "01.20")},
 	}
@@ -223,6 +225,9 @@ func TestMCPStrategySchemaPairsAndDeprecatedCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tool := range listed.Tools {
+		if tool.Name == "ad_group_cpa_cap_preview" && toolSchemaNode(t, tool)["deprecated"] != true {
+			t.Fatal("CPA cap tool annotation is missing")
+		}
 		if tool.Name == "ad_group_create_preview" || tool.Name == "ad_group_update_preview" {
 			if toolSchemaNode(t, tool, "payload", "cpaCap")["deprecated"] != true {
 				t.Fatal("cpaCap annotation is missing")

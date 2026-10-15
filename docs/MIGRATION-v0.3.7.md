@@ -49,7 +49,7 @@ General reports preserve date strings, including hourly timestamps. The optimize
 
 Preview objects may contain an additive `warnings` array of objects with `code` and `message`. Warnings are retained for `operations_inspect`. Consumers should display them alongside the proposed changes before applying a receipt.
 
-MCP input schemas reject invalid statuses, nonnumeric correlation IDs, mismatched strategy pairs, and malformed bid amounts before the handler. Context-dependent rules, such as the parent's strategy and currency, are checked by the handler. IDs and money remain string-based; bulk correlation IDs continue accepting nonnegative integers and decimal strings within the runtime's integer range.
+MCP input schemas reject invalid statuses, nonnumeric correlation IDs, mismatched strategy pairs, and malformed bid amounts before the handler. Context-dependent rules, such as the parent's strategy and currency, are checked by the handler. IDs and money remain string-based; bulk correlation IDs accept nonnegative numeric safe integers up to 2^53 - 1, or decimal strings within the int64 range.
 
 Validation for this release uses synthetic unit, HTTP, MCP, concurrency, and receipt tests plus cross-platform CI and security/distribution checks. Live advertising mutations are not part of this release's acceptance. Older live test results do not establish v0.3.7 runtime acceptance.
 

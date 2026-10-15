@@ -4,6 +4,8 @@ builds:
   - id: apple-ads-mcp
     main: ./cmd/apple-ads-mcp
     binary: apple-ads-mcp
+    flags:
+      - -trimpath
     env:
       - CGO_ENABLED=0
     goos:

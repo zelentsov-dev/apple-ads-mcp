@@ -44,6 +44,7 @@ def main() -> None:
     require(f"ARG VERSION={version}" in dockerfile, "Docker default version mismatch")
     require(f"`v{version}` is the current release" in readme, "README release status mismatch")
     require("release:" in goreleaser and 'name_template: "{{ .Tag }}"' in goreleaser, "GoReleaser release metadata missing")
+    require("      - -trimpath" in goreleaser, "release binaries must omit build-machine paths")
     require("first public release" not in goreleaser, "GoReleaser still assumes a first public release")
     archive_name_template = '{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}_{{ .Version }}'
     require(f'name_template: "{archive_name_template}"' in goreleaser, "release archive version must be the final filename component")

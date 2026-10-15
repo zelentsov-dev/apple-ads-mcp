@@ -176,7 +176,7 @@ Windows users should verify `checksums.txt`, extract the matching ZIP, and regis
 ### OCI image
 
 ```bash
-docker pull ghcr.io/zelentsov-dev/apple-ads-mcp:0.3.6
+docker pull ghcr.io/zelentsov-dev/apple-ads-mcp:0.3.7
 ```
 
 The image runs `serve --stdio` by default. Mount `accounts.json` and its referenced private key read-only.

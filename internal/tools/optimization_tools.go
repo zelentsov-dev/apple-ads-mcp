@@ -166,10 +166,6 @@ func (s *Service) optimizationReport(ctx context.Context, policy optimization.Po
 	return dailyMetrics(rows, resourceID, policy.MaxTotalDailyBudget.Currency)
 }
 
-func optimizationCampaignReportOperation(policy optimization.Policy, kind, resourceID string, start, end time.Time) (appleads.Operation, error) {
-	return optimizationCampaignReportOperationAtOffset(policy, kind, resourceID, start, end, 0)
-}
-
 func optimizationCampaignReportOperationAtOffset(policy optimization.Policy, kind, resourceID string, start, end time.Time, offset int) (appleads.Operation, error) {
 	request, err := optimizationCampaignReportRequest(policy, kind, resourceID, start, end, offset)
 	if err != nil {
@@ -202,10 +198,6 @@ func (s *Service) optimizationBiddables(ctx context.Context, policy optimization
 		resourceType = "ad_group"
 	}
 	return biddableRows(rows, resourceType, policy.MaxTotalDailyBudget.Currency)
-}
-
-func optimizationBiddableReportOperation(policy optimization.Policy, kind, campaignID string, start, end time.Time) (appleads.Operation, error) {
-	return optimizationBiddableReportOperationAtOffset(policy, kind, campaignID, start, end, 0)
 }
 
 func optimizationBiddableReportOperationAtOffset(policy optimization.Policy, kind, campaignID string, start, end time.Time, offset int) (appleads.Operation, error) {

@@ -3,10 +3,6 @@ package appleads
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"strconv"
-	"strings"
-	"time"
 )
 
 const BaseURL = "https://api.ads.apple.com/v1/"
@@ -19,6 +15,7 @@ type APIError struct {
 	Body           map[string]any `json:"appleBody,omitempty"`
 	ResponseFormat string         `json:"responseFormat,omitempty"`
 	Retryable      bool           `json:"retryable"`
+	RateLimit      RateLimit      `json:"rateLimit,omitempty"`
 }
 
 func (e *APIError) Error() string {
@@ -33,6 +30,11 @@ type RateLimit struct {
 	Remaining  string `json:"remaining,omitempty"`
 	Reset      string `json:"reset,omitempty"`
 	RetryAfter int    `json:"retryAfterSeconds,omitempty"`
+
+	resetSeconds int
+	resetSet     bool
+	retrySet     bool
+	timingUnsafe bool
 }
 
 type Pagination struct {
@@ -59,41 +61,6 @@ func (e *AmbiguousWriteError) Error() string {
 
 func (e *AmbiguousWriteError) Unwrap() error {
 	return e.Cause
-}
-
-func rateLimitFromHeaders(header http.Header) RateLimit {
-	return RateLimit{
-		Limit:      firstHeader(header, "X-Rate-Limit-Limit", "X-RateLimit-Limit"),
-		Remaining:  firstHeader(header, "X-Rate-Limit-Remaining", "X-RateLimit-Remaining"),
-		Reset:      firstHeader(header, "X-Rate-Limit-Reset", "X-RateLimit-Reset"),
-		RetryAfter: retryAfterSeconds(header.Get("Retry-After")),
-	}
-}
-
-func firstHeader(header http.Header, names ...string) string {
-	for _, name := range names {
-		if value := strings.TrimSpace(header.Get(name)); value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func retryAfterSeconds(value string) int {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0
-	}
-	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
-		return seconds
-	}
-	if parsed, err := http.ParseTime(value); err == nil {
-		seconds := int(time.Until(parsed).Seconds())
-		if seconds > 0 {
-			return seconds
-		}
-	}
-	return 0
 }
 
 func normalizeJSON(value any) any {

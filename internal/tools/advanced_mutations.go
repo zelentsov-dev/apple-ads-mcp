@@ -45,14 +45,6 @@ func (s *Service) campaignBidStrategyPreview(store *operations.Store) func(conte
 		if err != nil {
 			return failedPreview(err)
 		}
-		if err := validateBidStrategy(payload["bidStrategy"]); err != nil {
-			return failedPreview(err)
-		}
-		if strings.EqualFold(input.Strategy.BidStrategyType, "MAX_CONVERSIONS") {
-			if err := s.ensureMaxConversionsEligible(ctx, input.AccountInput, input.CampaignID); err != nil {
-				return failedPreview(err)
-			}
-		}
 		return s.updatePreviewPayload(ctx, store, "campaigns", "campaign_bid_strategy", input.AccountInput, input.CampaignID, payload)
 	}
 }
@@ -70,9 +62,14 @@ func (s *Service) optimizationPlanPreview(store *operations.Store) func(context.
 			return failedPreview(err)
 		}
 		now := s.nowUTC()
-		evidence, _, err := s.optimizationEvidence(ctx, policy, now)
+		capture := &optimizationEvidenceCapture{appleAdsManager: s.manager}
+		evidenceService := &Service{manager: capture}
+		evidence, _, err := evidenceService.optimizationEvidence(ctx, policy, now)
 		if err != nil {
 			return failedPreview(err)
+		}
+		if capture.err != nil {
+			return failedPreview(capture.err)
 		}
 		plan, err := optimization.BuildPlan(policy, evidence, history, now)
 		if err != nil {
@@ -85,13 +82,35 @@ func (s *Service) optimizationPlanPreview(store *operations.Store) func(context.
 		verify := make([]operations.VerificationRead, 0, len(plan.Actions))
 		seenReads := map[string]struct{}{}
 		targetIDs := make([]string, 0, len(plan.Actions))
+		warnings := make([]operations.OperationWarning, 0)
 		for _, action := range plan.Actions {
 			resource, payload, err := optimizationMutation(action)
 			if err != nil {
 				return failedPreview(err)
 			}
+			payload, err = typedPayloadMap(payload)
+			if err != nil {
+				return failedPreview(err)
+			}
+			if err := validateTypedResourcePayload(resource, false, payload); err != nil {
+				return failedPreview(err)
+			}
 			if err := s.ensureAppStoreMutation(ctx, input.AccountInput, resource, action.ResourceID, payload, false); err != nil {
 				return failedPreview(err)
+			}
+			evidence, actionWarnings, err := s.bidStrategyEvidence(ctx, input.AccountInput, resource, action.ResourceID, payload, false)
+			if err != nil {
+				return failedPreview(err)
+			}
+			for index := range evidence {
+				evidence[index].Name = action.CorrelationID + "_" + evidence[index].Name
+			}
+			verify = append(verify, evidence...)
+			for _, warning := range actionWarnings {
+				if warning.Code == "MAX_CONVERSIONS_HISTORY_UNCONFIRMED" {
+					warning = operations.OperationWarning{Code: "MAX_CONVERSIONS_LEARNING_PERIOD", Message: "Allow at least two weeks to assess learning after the strategy change."}
+				}
+				warnings = append(warnings, warning)
 			}
 			mutation, _ := appleads.ResourceUpdate(resource, action.ResourceID, payload)
 			steps = append(steps, operations.SequenceStep{Item: operations.OperationItemPreview{
@@ -113,26 +132,11 @@ func (s *Service) optimizationPlanPreview(store *operations.Store) func(context.
 				targetIDs = append(targetIDs, action.ResourceID)
 			}
 		}
-		reportEnd := now.UTC().AddDate(0, 0, -1)
-		reportStart := reportEnd.AddDate(0, 0, -27)
-		for _, campaignID := range policy.CampaignIDs {
-			campaignReport, err := optimizationCampaignReportOperation(policy, "campaigns", campaignID, reportStart, reportEnd)
-			if err != nil {
-				return failedPreview(err)
-			}
-			verify = append(verify, operations.VerificationRead{Name: "report_campaign_" + campaignID, Operation: campaignReport})
-			for _, kind := range []string{"adgroups", "keywords"} {
-				report, err := optimizationBiddableReportOperation(policy, kind, campaignID, reportStart, reportEnd)
-				if err != nil {
-					return failedPreview(err)
-				}
-				verify = append(verify, operations.VerificationRead{Name: "report_" + kind + "_" + campaignID, Operation: report})
-			}
-		}
+		verify = append(verify, capture.reads...)
 		preview, err := store.PreviewSequence(ctx, s.manager, input.Profile, input.AdAccountID, "optimization_plan", targetIDs, verify, steps, &operations.OperationImpact{
 			SpendAffecting: true, ObjectCount: len(steps), Currency: policy.MaxTotalDailyBudget.Currency,
 			MaximumAmount: &policy.MaxTotalDailyBudget, Policy: policy.Name,
-		})
+		}, warnings...)
 		if err != nil {
 			return failedPreview(err)
 		}
@@ -145,6 +149,13 @@ func (s *Service) optimizationPlanPreview(store *operations.Store) func(context.
 
 func optimizationExpectedBefore(action optimization.PlanAction, resource string) map[string]any {
 	switch action.Action {
+	case "bid_strategy":
+		strategyType := fmt.Sprint(action.Before["bidStrategy"])
+		goal := "TAP"
+		if strategyType == "MAX_CONVERSIONS" {
+			goal = "INSTALL"
+		}
+		return map[string]any{"bidStrategy": map[string]any{"bidStrategyType": strategyType, "bidStrategyGoal": goal}}
 	case "budget", "budget_increase", "budget_decrease":
 		if money, ok := moneyFromAnyTool(action.Before["dailyBudget"]); ok {
 			return map[string]any{"dailyBudget": map[string]any{"value": money}}
@@ -177,7 +188,12 @@ func optimizationMutation(action optimization.PlanAction) (string, map[string]an
 		}
 		return "campaigns", map[string]any{"dailyBudget": map[string]any{"value": money}}, nil
 	case "bid_strategy":
-		return "campaigns", map[string]any{"bidStrategy": map[string]any{"bidStrategyType": fmt.Sprint(action.After["bidStrategy"])}}, nil
+		strategyType := fmt.Sprint(action.After["bidStrategy"])
+		goal := "TAP"
+		if strategyType == "MAX_CONVERSIONS" {
+			goal = "INSTALL"
+		}
+		return "campaigns", map[string]any{"bidStrategy": map[string]any{"bidStrategyType": strategyType, "bidStrategyGoal": goal}}, nil
 	case "bid_increase", "bid_decrease":
 		money, ok := moneyFromAnyTool(action.After["bid"])
 		if !ok {
@@ -201,55 +217,6 @@ func moneyFromAnyTool(value any) (appleads.Money, bool) {
 	default:
 		return appleads.Money{}, false
 	}
-}
-
-func (s *Service) ensureMaxConversionsEligible(ctx context.Context, account AccountInput, campaignID string) error {
-	if err := s.ensureCampaignPlacement(ctx, account, campaignID, "APPSTORE_SEARCH_RESULTS"); err != nil {
-		return err
-	}
-	campaign, err := s.readResource(ctx, account, "campaigns", campaignID)
-	if err != nil {
-		return err
-	}
-	if !containsStringValue(campaign, "MAX_CONVERSIONS") && !containsTrueField(campaign, "maxConversionsEligible") {
-		return errors.New("campaign metadata from Apple does not confirm MAX_CONVERSIONS eligibility")
-	}
-	end := time.Now().UTC().AddDate(0, 0, -1)
-	start := end.AddDate(0, 0, -13)
-	policy := optimization.Policy{
-		Profile: account.Profile, AdAccountID: account.AdAccountID,
-		MaxTotalDailyBudget: appleads.Money{Amount: "1", Currency: "USD"},
-	}
-	accountOperation, _ := appleads.AdAccount(account.AdAccountID)
-	accountResult, err := s.manager.Do(ctx, account.Profile, account.AdAccountID, accountOperation)
-	if err != nil {
-		return err
-	}
-	policy.MaxTotalDailyBudget.Currency = strings.ToUpper(findStringField(accountResult.Data, "currency"))
-	metrics, err := s.optimizationReport(ctx, policy, "campaigns", campaignID, start, end)
-	if err != nil {
-		return fmt.Errorf("verify MAX_CONVERSIONS performance: %w", err)
-	}
-	installs := int64(0)
-	for _, metric := range metrics {
-		installs += metric.TapInstalls
-	}
-	if len(metrics) < 14 || installs < 70 {
-		return errors.New("MAX_CONVERSIONS requires 14 completed reporting days and at least five tap installs per day on average")
-	}
-	request := map[string]any{
-		"filters":    []any{map[string]any{"field": "campaignId", "operator": "EQUALS", "value": wireID(campaignID)}},
-		"pagination": map[string]any{"offset": 0, "pageSize": MaxItems},
-	}
-	query, _ := appleads.ResourceQuery("adgroups", request)
-	adGroups, err := s.manager.Do(ctx, account.Profile, account.AdAccountID, query)
-	if err != nil {
-		return err
-	}
-	if !containsTrueField(adGroups.Data, "automatedKeywordsOptIn") {
-		return errors.New("MAX_CONVERSIONS requires an eligible Search Match ad group")
-	}
-	return nil
 }
 
 func (s *Service) sharedBudgetCreatePreview(store *operations.Store) func(context.Context, *mcp.CallToolRequest, SharedBudgetCreatePreviewInput) (*mcp.CallToolResult, PreviewOutput, error) {
@@ -713,32 +680,11 @@ func (s *Service) deleteInventory(ctx context.Context, account AccountInput, res
 	return reads, parentIDs, cascadeCount, nil
 }
 
-func containsTrueField(value any, field string) bool {
-	switch typed := value.(type) {
-	case map[string]any:
-		if current, ok := typed[field].(bool); ok && current {
-			return true
-		}
-		for _, item := range typed {
-			if containsTrueField(item, field) {
-				return true
-			}
-		}
-	case []any:
-		for _, item := range typed {
-			if containsTrueField(item, field) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func addDeletePreviewTool[In any](server *mcp.Server, item Spec, handler mcp.ToolHandlerFor[In, PreviewOutput]) {
 	destructive := true
 	open := true
 	mcp.AddTool(server, &mcp.Tool{
-		Name: item.Name, Description: item.Description,
+		Name: item.Name, Description: item.Description, InputSchema: mutationInputSchema[In](item.Name),
 		Annotations: &mcp.ToolAnnotations{Title: strings.ReplaceAll(item.Name, "_", " "), ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &open},
 	}, handler)
 }

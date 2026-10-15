@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/zelentsov-dev/apple-ads-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/zelentsov-dev/apple-ads-mcp/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/zelentsov-dev/apple-ads-mcp)](https://github.com/zelentsov-dev/apple-ads-mcp/releases)
-[![Go](https://img.shields.io/badge/Go-1.26.7%2B-00ADD8?logo=go)](go.mod)
+[![Go](https://img.shields.io/badge/Go-1.26.9%2B-00ADD8?logo=go)](go.mod)
 [![License](https://img.shields.io/github/license/zelentsov-dev/apple-ads-mcp)](LICENSE)
 
 Apple Ads MCP is a local-first [Model Context Protocol](https://modelcontextprotocol.io/) server for the [Apple Ads Platform API v1](https://developer.apple.com/documentation/apple-ads-platform-api). It gives Codex, Claude, and other MCP clients typed tools to research, inspect, and safely operate App Store advertising accounts.
@@ -56,7 +56,7 @@ Other useful read-only starters:
 
 ## Current release
 
-`v0.3.6` is the current release. It adds typed actionable diagnostics, fixes Apple keyword bulk creation with zero-based integer correlation IDs and one aggregate cross-group receipt, and tightens read/query contracts without removing legacy `id`, `filters`, or top-level bulk `adGroupId` inputs. See the [v0.3.6 release and migration notes](docs/MIGRATION-v0.3.6.md).
+`v0.3.7` is the current release. It honors Apple rate-limit timing, validates bid strategies in their campaign and ad-group context, updates report grouping, and deprecates CPA cap without removing existing tools. Explicit strategy requests and optimizer recommendations now have separate history policies. See the [v0.3.7 release and migration notes](docs/MIGRATION-v0.3.7.md).
 
 The v0.3.5 version-final archive naming, formula-scoped trust from v0.3.4, exact-path verification from v0.3.3, and one-command onboarding from v0.3.2 remain intact.
 
@@ -84,7 +84,7 @@ Keywords and negative keywords are Search Results resources. The Platform API re
 | Research | keyword, phrase, category, target-CPA suggestions, search popularity, impression share |
 | Reports | typed campaign, ad-group, ad, keyword, and search-term reports |
 | Campaign operation | create/update, budget, countries, schedule, pause, and resume previews |
-| Ad-group operation | create/update, schedule, targeting, Search Match, bid, CPA cap, pause, and resume previews |
+| Ad-group operation | create/update, schedule, targeting, Search Match, bid, deprecated CPA cap, pause, and resume previews |
 | Keywords | individual and bulk targeting/negative keyword create/update, bid, pause, and resume previews |
 | Ads and creatives | typed App Store creative and ad create/update, pause, and resume previews |
 | Recommendations | read, apply-preview, and dismiss-preview for daily budget and target CPA |
@@ -120,15 +120,15 @@ An irreversible delete has five additional gates: `--allow-deletes`, profile `al
 
 ## Release validation
 
-The v0.3.6 release requires the complete compatibility suite, MCP stdio contract tests, unit and HTTP tests, the race detector, static analysis, vulnerability and secret scans, and distribution validation. Cross-platform CI runs on macOS, Linux, and Windows.
+The v0.3.7 release requires the complete compatibility suite, MCP stdio contract tests, unit and HTTP tests, the race detector, static analysis, vulnerability and secret scans, and distribution validation. Cross-platform CI runs on macOS, Linux, and Windows.
 
-Runtime confirmation is a separate owner-controlled gate. On 2026-08-31, the v0.3.6 P2 read-only matrix and a separately authorized `PAUSED` targeting-keyword bulk fixture with 2 and 28 items passed against Apple Ads API v1. Both aggregate receipts applied and verified every returned keyword ID directly; the campaign and ad group remained `PAUSED` throughout the write acceptance.
+This release uses synthetic acceptance only; no live advertising mutations are part of v0.3.7 validation. Runtime confirmation is a separate owner-controlled gate. On 2026-08-31, the v0.3.6 P2 read-only matrix and a separately authorized `PAUSED` targeting-keyword bulk fixture with 2 and 28 items passed against Apple Ads API v1. Both aggregate receipts applied and verified every returned keyword ID directly; the campaign and ad group remained `PAUSED` throughout the write acceptance.
 
-Earlier v0.3.x live acceptance confirmed read-only optimization baselines and plans, `PAUSED` fixture creation and readback, budget/bid/strategy updates, pause/resume, receipt drift checks, item verification, and deletion of disposable campaigns, ad groups, keywords, and negative keywords. All retained fixtures remained `PAUSED` with zero spend. This historical evidence does not replace the new v0.3.6 bulk/P2 acceptance gate.
+Earlier v0.3.x live acceptance confirmed read-only optimization baselines and plans, `PAUSED` fixture creation and readback, budget/bid/strategy updates, pause/resume, receipt drift checks, item verification, and deletion of disposable campaigns, ad groups, keywords, and negative keywords. All retained fixtures remained `PAUSED` with zero spend. This historical evidence does not prove v0.3.7 live acceptance.
 
 Account-dependent paths have an explicit evidence boundary:
 
-- Active optimization-plan apply and `MAX_CONVERSIONS` remain automated-test verified until a deliberately selected mature campaign satisfies the minimum 14-day data and Apple eligibility gates.
+- Active optimization-plan apply and `MAX_CONVERSIONS` changes remain automated-test verified for this release. Optimizer recommendations require the existing history minimums; explicit user-requested previews instead show a warning that statistical readiness has not been established, while preserving contract validation and write gates.
 - Shared-budget create/update/assignment/delete remain contract- and HTTP-test verified because the live acceptance account uses `PAYG`; Apple requires `LOC`.
 - Default Product Page ad and creative deletion is confirmed as `not_eligible` because Apple does not allow those resources to be deleted individually.
 
@@ -164,10 +164,10 @@ Download the archive for your platform from [GitHub Releases](https://github.com
 Apple silicon example:
 
 ```bash
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.6/apple-ads-mcp_darwin_arm64_0.3.6.tar.gz
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.6/checksums.txt
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.7/apple-ads-mcp_darwin_arm64_0.3.7.tar.gz
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.7/checksums.txt
 shasum -a 256 -c checksums.txt --ignore-missing
-tar -xzf apple-ads-mcp_darwin_arm64_0.3.6.tar.gz
+tar -xzf apple-ads-mcp_darwin_arm64_0.3.7.tar.gz
 sudo install -m 0755 apple-ads-mcp /usr/local/bin/apple-ads-mcp
 ```
 
@@ -189,7 +189,7 @@ cd apple-ads-mcp
 go build -trimpath -o ./apple-ads-mcp ./cmd/apple-ads-mcp
 ```
 
-Go 1.26.7 or newer is required.
+Go 1.26.9 or newer is required.
 
 ## Apple API setup
 
@@ -392,7 +392,7 @@ The server returns these as bounded structured Apple errors and does not convert
 
 ## Compatibility
 
-v0.3 preserves all v0.2.1 tool names and schemas, then adds optimization, shared-budget mutation, bid-strategy, and lifecycle tools. v0.3.1 adds a required `maxBid` when bid permission is enabled and fail-closed reconciliation rules; see the [v0.3.1 migration notes](docs/MIGRATION-v0.3.1.md). v0.3.2 changes distribution and onboarding only. v0.3.3 switches release verification to the exact tap formula path, v0.3.4 adds formula-scoped trust for Homebrew 6, and v0.3.5 disambiguates Homebrew version detection by placing the semantic version at the end of archive names. v0.3.6 keeps existing tool names and compatible legacy inputs while adding typed aliases, query shortcuts, diagnostics, and stricter required scopes; see the [v0.3.6 notes](docs/MIGRATION-v0.3.6.md). Older clients should also read the [v0.3 notes](docs/MIGRATION-v0.3.md) and [v0.2 notes](docs/MIGRATION-v0.2.md).
+v0.3 preserves all v0.2.1 tool names and schemas, then adds optimization, shared-budget mutation, bid-strategy, and lifecycle tools. v0.3.1 adds a required `maxBid` when bid permission is enabled and fail-closed reconciliation rules; see the [v0.3.1 migration notes](docs/MIGRATION-v0.3.1.md). v0.3.2 changes distribution and onboarding only. v0.3.3 switches release verification to the exact tap formula path, v0.3.4 adds formula-scoped trust for Homebrew 6, and v0.3.5 disambiguates Homebrew version detection by placing the semantic version at the end of archive names. v0.3.6 keeps existing tool names and compatible legacy inputs while adding typed aliases, query shortcuts, diagnostics, and stricter required scopes; see the [v0.3.6 notes](docs/MIGRATION-v0.3.6.md). v0.3.7 adds header-aware request pacing, contextual bid validation, report grouping corrections, and persisted preview warnings; see the [v0.3.7 notes](docs/MIGRATION-v0.3.7.md). Older clients should also read the [v0.3 notes](docs/MIGRATION-v0.3.md) and [v0.2 notes](docs/MIGRATION-v0.2.md).
 
 The public tool schema is not frozen before v1.0. API-family scope and operation status are tracked in the [machine-readable operation matrix](api-contract/operations.json). The official Java client baseline and App Store endpoint inventory are tracked in [upstream-baseline.json](api-contract/upstream-baseline.json).
 

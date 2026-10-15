@@ -37,6 +37,12 @@ type OperationPreview struct {
 	RequiresApply bool                   `json:"requiresApply"`
 	Impact        *OperationImpact       `json:"impact,omitempty"`
 	Items         []OperationItemPreview `json:"items,omitempty"`
+	Warnings      []OperationWarning     `json:"warnings,omitempty"`
+}
+
+type OperationWarning struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 type OperationImpact struct {
@@ -115,17 +121,21 @@ type RecoveryItem struct {
 }
 
 type VerificationRead struct {
-	Name            string
-	Operation       appleads.Operation
-	ExpectDeleted   bool
-	RequireComplete bool
-	Scopes          []string
+	Name               string
+	Operation          appleads.Operation
+	ExpectDeleted      bool
+	RequireComplete    bool
+	Scopes             []string
+	Expected           any
+	ExpectedPagination *appleads.Pagination
+	Fields             []string
 }
 
 type PreviewOptions struct {
-	Impact *OperationImpact
-	Items  []OperationItemPreview
-	Create *CreateExpectation
+	Impact   *OperationImpact
+	Items    []OperationItemPreview
+	Create   *CreateExpectation
+	Warnings []OperationWarning
 }
 
 type CreateExpectation struct {
@@ -260,6 +270,7 @@ func (s *Store) PreviewComposite(ctx context.Context, executor Executor, profile
 		RequiresApply: true,
 		Impact:        options.Impact,
 		Items:         append([]OperationItemPreview(nil), options.Items...),
+		Warnings:      append([]OperationWarning(nil), options.Warnings...),
 	}
 	s.mu.Lock()
 	s.pruneExpiredLocked()
@@ -278,7 +289,7 @@ func (s *Store) PreviewComposite(ctx context.Context, executor Executor, profile
 	return preview, nil
 }
 
-func (s *Store) PreviewSequence(ctx context.Context, executor Executor, profile, adAccountID, name string, targetIDs []string, verify []VerificationRead, steps []SequenceStep, impact *OperationImpact) (OperationPreview, error) {
+func (s *Store) PreviewSequence(ctx context.Context, executor Executor, profile, adAccountID, name string, targetIDs []string, verify []VerificationRead, steps []SequenceStep, impact *OperationImpact, warnings ...OperationWarning) (OperationPreview, error) {
 	if len(steps) == 0 || len(steps) > 100 {
 		return OperationPreview{}, errors.New("sequence must contain 1 to 100 mutation steps")
 	}
@@ -326,7 +337,7 @@ func (s *Store) PreviewSequence(ctx context.Context, executor Executor, profile,
 	}
 	payload := map[string]any{"actions": payloadItems}
 	placeholder, _ := appleads.ResourceUpdate("campaigns", "sequence-placeholder", map[string]any{"status": "PAUSED"})
-	preview, err := s.PreviewComposite(ctx, executor, profile, adAccountID, name, targetIDs, payload, verify, placeholder, PreviewOptions{Impact: impact, Items: items})
+	preview, err := s.PreviewComposite(ctx, executor, profile, adAccountID, name, targetIDs, payload, verify, placeholder, PreviewOptions{Impact: impact, Items: items, Warnings: warnings})
 	if err != nil {
 		return OperationPreview{}, err
 	}
@@ -1103,8 +1114,29 @@ func readVerificationState(ctx context.Context, executor Executor, profile, adAc
 			}
 			return nil, nil, nil, fmt.Errorf("read %s: %w", name, err)
 		}
+		if len(read.Fields) > 0 {
+			object, ok := result.Data.(map[string]any)
+			if !ok {
+				return nil, nil, nil, fmt.Errorf("read %s: expected an object", name)
+			}
+			selected := make(map[string]any, len(read.Fields))
+			for _, field := range read.Fields {
+				selected[field] = object[field]
+			}
+			result.Data = selected
+		}
 		if requireComplete && read.RequireComplete && !verificationResultComplete(result) {
 			return nil, nil, nil, fmt.Errorf("read %s: %w", name, ErrVerificationIncomplete)
+		}
+		if requireComplete && read.ExpectedPagination != nil && *read.ExpectedPagination != result.Pagination {
+			return nil, nil, nil, fmt.Errorf("read %s: %w", name, ErrStateDrift)
+		}
+		if requireComplete && (read.Expected != nil || read.ExpectedPagination != nil) {
+			expectedHash, expectedErr := valueHash(read.Expected)
+			actualHash, actualErr := valueHash(result.Data)
+			if expectedErr != nil || actualErr != nil || expectedHash != actualHash {
+				return nil, nil, nil, fmt.Errorf("read %s: %w", name, ErrStateDrift)
+			}
 		}
 		hashValues[name] = verificationHashValue(result.Data, result.Pagination)
 		currentValues[name] = result.Data

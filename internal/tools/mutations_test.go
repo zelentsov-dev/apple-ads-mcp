@@ -29,6 +29,7 @@ func TestTypedCampaignAndCreativeValidation(t *testing.T) {
 	campaign := map[string]any{
 		"name": "Fixture", "billingEvent": "TAPS", "promotedObjectType": "APPSTORE_APP", "promotedObjectId": "1234567890", "status": "PAUSED",
 		"dailyBudget": map[string]any{"value": map[string]any{"amount": "10.00", "currency": "USD"}},
+		"bidStrategy": map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": map[string]any{"amount": "1.00", "currency": "USD"}},
 		"targeting": map[string]any{
 			"supplySource":    map[string]any{"include": []any{"APPSTORE"}},
 			"supplyPlacement": map[string]any{"include": []any{"APPSTORE_SEARCH_RESULTS"}},
@@ -181,10 +182,10 @@ func TestAppStoreBidStrategyValidation(t *testing.T) {
 			t.Fatalf("expected strategy rejection: %#v", strategy)
 		}
 	}
-	if err := validateBidStrategy(map[string]any{"bidStrategyType": "MANUAL_CPT", "bid": map[string]any{"amount": "1.00", "currency": "USD"}}); err != nil {
+	if err := validateBidStrategy(map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": map[string]any{"amount": "1.00", "currency": "USD"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateBidStrategy(map[string]any{"bidStrategyType": "MAX_CONVERSIONS"}); err != nil {
+	if err := validateBidStrategy(map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL"}); err != nil {
 		t.Fatal(err)
 	}
 }

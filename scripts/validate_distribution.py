@@ -94,6 +94,9 @@ def main() -> None:
     require("--allow-deletes" in readme and "APPLE_ADS_ALLOW_DELETES" in readme, "README delete gates missing")
     require("optimization policy init" in readme and "optimization_plan" in readme, "README optimizer setup missing")
     require("maxBid" in readme and "reconciliation" in readme.lower(), "README optimizer safety migration missing")
+    require((ROOT / "docs/MIGRATION-v0.3.7.md").is_file(), "v0.3.7 migration notes missing")
+    require("      - docs/**" not in goreleaser, "release archives must not include private research documents")
+    require("      - docs/MIGRATION-*.md" in goreleaser and "      - docs/ROADMAP.md" in goreleaser, "public release documentation allowlist missing")
     require("scripts/audit_upstream.py" in (ROOT / ".github/workflows/upstream-audit.yml").read_text(), "upstream audit script is not scheduled")
     for source in ROOT.rglob("*.go"):
         if source.name.endswith("_test.go"):

@@ -333,3 +333,56 @@ func max64(left, right int64) int64 {
 	}
 	return right
 }
+
+func TestStrategyUsesConfiguredCompletedWindowAndAverage(t *testing.T) {
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name     string
+		days     int
+		average  string
+		installs int64
+		want     bool
+	}{
+		{"baseline 70", 14, "5.00", 5, true},
+		{"below baseline", 14, "5.00", 4, false},
+		{"stricter window", 21, "5.00", 5, true},
+		{"stricter average", 21, "6.00", 5, false},
+		{"stricter both", 28, "6.00", 6, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			policy := validPolicy()
+			policy.Permissions = Permissions{Strategy: true}
+			policy.Thresholds.MaxConversionsMinimumDays = test.days
+			policy.Thresholds.MaxConversionsDailyAvg = test.average
+			evidence := campaignEvidence(now, "30.00", test.installs, "50.00")
+			evidence.SearchMatch = true
+			evidence.MaxConversionsEligible = true
+			plan, err := BuildPlan(policy, []CampaignEvidence{evidence}, History{}, now)
+			if err != nil || (len(plan.Actions) == 1) != test.want {
+				t.Fatalf("actions=%+v err=%v", plan.Actions, err)
+			}
+		})
+	}
+}
+
+func TestAutomaticStrategyNeverGeneratesManualChildBidActions(t *testing.T) {
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	for _, currentStrategy := range []string{"MANUAL_CPT", "MAX_CONVERSIONS"} {
+		policy := validPolicy()
+		policy.Permissions = Permissions{Strategy: true, Bid: true}
+		evidence := campaignEvidence(now, "30.00", 5, "50.00")
+		evidence.BidStrategy = currentStrategy
+		evidence.SearchMatch = true
+		evidence.MaxConversionsEligible = true
+		evidence.Biddables = []BiddableEvidence{{ResourceType: "ad_group", ResourceID: "10", Status: "ENABLED", Bid: &appleads.Money{Amount: "1.00", Currency: "USD"}, Daily: evidence.Daily}}
+		plan, err := BuildPlan(policy, []CampaignEvidence{evidence}, History{}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, action := range plan.Actions {
+			if action.Action == "bid_increase" || action.Action == "bid_decrease" {
+				t.Fatalf("strategy=%s manual action=%+v", currentStrategy, action)
+			}
+		}
+	}
+}

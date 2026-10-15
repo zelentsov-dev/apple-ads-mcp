@@ -3,10 +3,10 @@ module github.com/zelentsov-dev/apple-ads-mcp
 go 1.26.9
 
 require (
-	github.com/google/jsonschema-go v0.4.3
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.7.0
-	golang.org/x/sys v0.47.0
+	golang.org/x/sys v0.49.0
 )
 
 require (

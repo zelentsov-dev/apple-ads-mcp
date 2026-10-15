@@ -64,7 +64,7 @@ Use the most specific preview tool: budget, countries, schedule, targeting, Sear
 
 Apply only through `operations_apply`. After apply, call `operations_verify` and the matching get/query tool. After an ambiguous result, verify before any new write; `operations_inspect` only reports receipt metadata. There is no raw API tool.
 
-Use `campaign_bid_strategy_preview` for MANUAL_CPT or an Apple-eligible Search Results `MAX_CONVERSIONS` change. Use typed shared-budget previews only when `ad_account_get` reports `LOC`; MCP input contains a local `billingProfile` name, never billing PII.
+Use `campaign_bid_strategy_preview` for `MANUAL_CPT` + `TAP` or Search Results `MAX_CONVERSIONS` + `INSTALL`. Explicit requests show a statistical-readiness warning without requiring optimizer history minimums; optimizer recommendations retain their conservative history thresholds. Inspect persisted preview warnings before applying. `ad_group_cpa_cap_preview` and `cpaCap` are deprecated compatibility surfaces; do not recommend them for new setups or silently convert existing caps. Use typed shared-budget previews only when `ad_account_get` reports `LOC`; MCP input contains a local `billingProfile` name, never billing PII.
 
 Delete tools are specialized by resource. Use them only for an explicitly authorized irreversible task after reading the full cascade inventory and exact expected text. Delete is never part of optimization.
 

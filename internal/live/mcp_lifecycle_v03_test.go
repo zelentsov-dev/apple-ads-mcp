@@ -64,7 +64,7 @@ func TestMCPV03PausedLifecycleAcceptance(t *testing.T) {
 	currency = strings.ToUpper(currency)
 	date := time.Now().UTC().Format("2006-01-02")
 	name := fmt.Sprintf("Apple Ads MCP v0.3 Validation - Lifecycle - %s", date)
-	campaignID := createV03Campaign(t, ctx, session, profile.Name, accountID, adamID, storefront, currency, dailyBudget, name)
+	campaignID := createV03Campaign(t, ctx, session, profile.Name, accountID, adamID, storefront, currency, dailyBudget, defaultBid, name)
 
 	previewApply(t, ctx, session, "campaign_bid_strategy_preview", map[string]any{
 		"profile": profile.Name, "adAccountId": accountID, "campaignId": campaignID,
@@ -97,7 +97,7 @@ func TestMCPV03PausedLifecycleAcceptance(t *testing.T) {
 	previewApplyDelete(t, ctx, session, "ad_group_delete_preview", profile.Name, accountID, deleteGroupID, deleteGroupName)
 
 	deleteCampaignName := fmt.Sprintf("Apple Ads MCP v0.3 Validation - Delete Campaign - %s", date)
-	deleteCampaignID := createV03Campaign(t, ctx, session, profile.Name, accountID, adamID, storefront, currency, dailyBudget, deleteCampaignName)
+	deleteCampaignID := createV03Campaign(t, ctx, session, profile.Name, accountID, adamID, storefront, currency, dailyBudget, defaultBid, deleteCampaignName)
 	previewApplyDelete(t, ctx, session, "campaign_delete_preview", profile.Name, accountID, deleteCampaignID, deleteCampaignName)
 
 	runV03AdAndCreativeLifecycle(t, ctx, session, profile.Name, accountID, adamID, storefront, currency, dailyBudget, defaultBid, date)
@@ -105,12 +105,12 @@ func TestMCPV03PausedLifecycleAcceptance(t *testing.T) {
 	t.Log("v0.3 PAUSED lifecycle acceptance completed with verified deletes and no enabled campaign")
 }
 
-func createV03Campaign(t *testing.T, ctx context.Context, session *mcp.ClientSession, profile, accountID, adamID, storefront, currency, dailyBudget, name string) string {
+func createV03Campaign(t *testing.T, ctx context.Context, session *mcp.ClientSession, profile, accountID, adamID, storefront, currency, dailyBudget, defaultBid, name string) string {
 	t.Helper()
-	return createV03CampaignForPlacement(t, ctx, session, profile, accountID, adamID, storefront, currency, dailyBudget, name, "APPSTORE_SEARCH_RESULTS")
+	return createV03CampaignForPlacement(t, ctx, session, profile, accountID, adamID, storefront, currency, dailyBudget, defaultBid, name, "APPSTORE_SEARCH_RESULTS")
 }
 
-func createV03CampaignForPlacement(t *testing.T, ctx context.Context, session *mcp.ClientSession, profile, accountID, adamID, storefront, currency, dailyBudget, name, placement string) string {
+func createV03CampaignForPlacement(t *testing.T, ctx context.Context, session *mcp.ClientSession, profile, accountID, adamID, storefront, currency, dailyBudget, defaultBid, name, placement string) string {
 	t.Helper()
 	if existing := findResourceIDByField(callTool(t, ctx, session, "campaigns_query", map[string]any{
 		"profile": profile, "adAccountId": accountID,
@@ -128,7 +128,7 @@ func createV03CampaignForPlacement(t *testing.T, ctx context.Context, session *m
 				"supplyPlacement": map[string]any{"include": []string{placement}},
 				"countryOrRegion": map[string]any{"include": []string{storefront}},
 			},
-			"bidStrategy": map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP"},
+			"bidStrategy": map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": map[string]any{"amount": defaultBid, "currency": currency}},
 		},
 	})
 }
@@ -157,7 +157,7 @@ func runV03AdAndCreativeLifecycle(t *testing.T, ctx context.Context, session *mc
 	}
 
 	campaignName := fmt.Sprintf("Apple Ads MCP v0.3 Validation - Ad Delete - %s", date)
-	campaignID := createV03CampaignForPlacement(t, ctx, session, profile, accountID, adamID, storefront, currency, dailyBudget, campaignName, "APPSTORE_SEARCH_TAB")
+	campaignID := createV03CampaignForPlacement(t, ctx, session, profile, accountID, adamID, storefront, currency, dailyBudget, defaultBid, campaignName, "APPSTORE_SEARCH_TAB")
 	adGroupName := "Apple Ads MCP v0.3 Validation - Ad Delete Group"
 	adGroupID := createV03AdGroup(t, ctx, session, profile, accountID, campaignID, currency, defaultBid, adGroupName)
 	adName := fmt.Sprintf("Apple Ads MCP v0.3 Validation - Delete Ad - %s", date)

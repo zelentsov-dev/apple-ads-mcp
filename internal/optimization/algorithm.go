@@ -313,14 +313,24 @@ func campaignPlan(item CampaignBaseline, policy Policy, thresholds Thresholds, t
 			add(20, "campaign", campaign.CampaignID, "budget_decrease", "CPI exceeded the target in both completed seven-day windows", map[string]any{"dailyBudget": campaign.DailyBudget}, map[string]any{"dailyBudget": after})
 		}
 	}
-	if policy.Permissions.Strategy && campaign.BidStrategy == "MANUAL_CPT" && campaign.Placement == "APPSTORE_SEARCH_RESULTS" && campaign.SearchMatch && campaign.MaxConversionsEligible && last14.Days >= thresholds.MaxConversionsMinimumDays {
-		average := new(big.Rat).Quo(new(big.Rat).SetInt64(last14.TapInstalls), big.NewRat(int64(last14.Days), 1))
+	strategyChanges := false
+	if policy.Permissions.Strategy && campaign.BidStrategy == "MANUAL_CPT" && campaign.Placement == "APPSTORE_SEARCH_RESULTS" && campaign.SearchMatch && campaign.MaxConversionsEligible {
+		completed, err := completedWindow(campaign.Daily, now, 28)
+		if err != nil {
+			return nil, err
+		}
+		strategyWindow, err := summarize(tail(completed, thresholds.MaxConversionsMinimumDays), campaign.DailyBudget)
+		if err != nil {
+			return nil, err
+		}
+		average := new(big.Rat).Quo(new(big.Rat).SetInt64(strategyWindow.TapInstalls), big.NewRat(int64(strategyWindow.Days), 1))
 		minimum, _ := positiveRat(thresholds.MaxConversionsDailyAvg)
 		if average.Cmp(minimum) >= 0 {
+			strategyChanges = true
 			add(30, "campaign", campaign.CampaignID, "bid_strategy", "Search Match campaign meets Apple eligibility and completed-data thresholds", map[string]any{"bidStrategy": campaign.BidStrategy}, map[string]any{"bidStrategy": "MAX_CONVERSIONS"})
 		}
 	}
-	if policy.Permissions.Bid {
+	if policy.Permissions.Bid && campaign.BidStrategy == "MANUAL_CPT" && !strategyChanges {
 		for _, biddable := range campaign.Biddables {
 			if biddable.Bid == nil || biddable.Status != "ENABLED" {
 				continue

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zelentsov-dev/apple-ads-mcp/internal/appleads"
+	"github.com/zelentsov-dev/apple-ads-mcp/internal/operations"
 )
 
 var decimalIDPattern = regexp.MustCompile(`^[1-9][0-9]*$`)
@@ -100,6 +102,9 @@ func validateCampaignPayload(payload map[string]any, create bool) error {
 	} else if create {
 		return errors.New("campaign targeting is required")
 	}
+	if err := validateBidStrategyForOperation(payload["bidStrategy"], create, create); err != nil {
+		return err
+	}
 	return validateSchedule(payload)
 }
 
@@ -166,7 +171,7 @@ func validateAdGroupPayload(payload map[string]any, create bool) error {
 	if status := stringField(payload, "status"); status != "" && !allowedStatus(status) {
 		return fmt.Errorf("unsupported ad group status %q", status)
 	}
-	if err := validateBidStrategy(payload["bidStrategy"]); err != nil {
+	if err := validateBidStrategyForOperation(payload["bidStrategy"], create, false); err != nil {
 		return err
 	}
 	if err := validateCPAGoal(payload["cpaCap"]); err != nil {
@@ -330,20 +335,55 @@ func parseISOTimestamp(value string) (time.Time, error) {
 }
 
 func validateBidStrategy(value any) error {
-	strategy, ok := value.(map[string]any)
-	if !ok {
+	return validateBidStrategyForOperation(value, false, false)
+}
+
+func validateBidStrategyForOperation(value any, create, required bool) error {
+	if value == nil {
+		if required {
+			return errors.New("campaign creation requires bidStrategy")
+		}
 		return nil
 	}
-	strategyType := strings.ToUpper(stringField(strategy, "bidStrategyType"))
-	if strategyType != "" && strategyType != "MANUAL_CPT" && strategyType != "MAX_CONVERSIONS" {
-		return fmt.Errorf("bidStrategyType %q is outside App Store Ads scope", strategyType)
+	strategy, ok := value.(map[string]any)
+	if !ok || len(strategy) == 0 {
+		return errors.New("bidStrategy must be a nonempty object")
 	}
-	if strategyType == "MAX_CONVERSIONS" {
-		if _, exists := strategy["bid"]; exists {
-			return errors.New("MAX_CONVERSIONS must not include a manual bid")
+	strategyType := stringField(strategy, "bidStrategyType")
+	goal := stringField(strategy, "bidStrategyGoal")
+	_, hasType := strategy["bidStrategyType"]
+	_, hasGoal := strategy["bidStrategyGoal"]
+	if hasType || hasGoal || create {
+		if strategyType != "MANUAL_CPT" && strategyType != "MAX_CONVERSIONS" {
+			return errors.New("bidStrategyType must be MANUAL_CPT or MAX_CONVERSIONS")
+		}
+		expected := "TAP"
+		if strategyType == "MAX_CONVERSIONS" {
+			expected = "INSTALL"
+		}
+		if goal != expected {
+			return fmt.Errorf("%s requires bidStrategyGoal %s; send type and goal together", strategyType, expected)
 		}
 	}
-	return validateOptionalMoneyFields(strategy, "bid")
+	_, hasBid := strategy["bid"]
+	if create && strategyType == "MANUAL_CPT" && !hasBid {
+		return errors.New("MANUAL_CPT creation requires a positive bid")
+	}
+	if strategyType == "" && !hasBid {
+		return errors.New("bidStrategy update requires a type and goal pair or a bid")
+	}
+	if hasBid {
+		if err := validateMoneyField(strategy, "bid", create || strategyType != "MAX_CONVERSIONS"); err != nil {
+			return err
+		}
+		bid := strategy["bid"].(map[string]any)
+		amount, ok := new(big.Rat).SetString(stringField(bid, "amount"))
+		if !ok || amount.Sign() < 0 {
+			return errors.New("bid must not be negative")
+		}
+		return nil
+	}
+	return nil
 }
 
 func validateCPAGoal(value any) error {
@@ -436,4 +476,201 @@ func stringSlice(value any) []string {
 	default:
 		return nil
 	}
+}
+
+func (s *Service) bidStrategyEvidence(ctx context.Context, account AccountInput, resource, id string, payload map[string]any, create bool) ([]operations.VerificationRead, []operations.OperationWarning, error) {
+	warnings := mutationWarnings(payload)
+	if resource != "campaigns" && resource != "adgroups" {
+		return nil, warnings, nil
+	}
+	reads := make([]operations.VerificationRead, 0, 3)
+	readObject := func(name, kind, objectID string) (map[string]any, error) {
+		op, err := appleads.ResourceGet(kind, objectID)
+		if err != nil {
+			return nil, err
+		}
+		result, err := s.manager.Do(ctx, account.Profile, account.AdAccountID, op)
+		if err != nil {
+			return nil, err
+		}
+		object, ok := result.Data.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%s strategy evidence must be an object", kind)
+		}
+		reads = append(reads, operations.VerificationRead{Name: name, Operation: op, Expected: cloneObject(object), Scopes: []string{operations.ObjectMutationScope(objectID)}})
+		return object, nil
+	}
+	currencies := collectFieldValues(payload, "currency", MaxItems)
+	if len(currencies) > 0 {
+		op, err := appleads.AdAccount(account.AdAccountID)
+		if err != nil {
+			return nil, nil, err
+		}
+		result, err := s.manager.Do(ctx, account.Profile, account.AdAccountID, op)
+		if err != nil {
+			return nil, nil, err
+		}
+		accountObject, ok := result.Data.(map[string]any)
+		if !ok {
+			return nil, nil, errors.New("account currency evidence must be an object")
+		}
+		currency := strings.ToUpper(stringField(accountObject, "currency"))
+		if currency == "" {
+			return nil, nil, errors.New("account currency is unavailable")
+		}
+		for _, value := range currencies {
+			if !strings.EqualFold(value, currency) {
+				return nil, nil, errors.New("bid and budget currencies must match the ad account")
+			}
+		}
+		reads = append(reads, operations.VerificationRead{Name: "strategy_account", Operation: op, Expected: map[string]any{"currency": accountObject["currency"]}, Fields: []string{"currency"}})
+	}
+	strategy, hasStrategy := payload["bidStrategy"].(map[string]any)
+	if resource == "campaigns" {
+		_, hasTargeting := payload["targeting"]
+		if !hasStrategy && !hasTargeting {
+			return reads, warnings, nil
+		}
+		campaign := payload
+		if !create {
+			var err error
+			campaign, err = readObject("strategy_campaign", "campaigns", id)
+			if err != nil {
+				return nil, nil, err
+			}
+		}
+		proposedCampaign := cloneObject(campaign)
+		if targeting, ok := payload["targeting"].(map[string]any); ok {
+			proposedTargeting := cloneObject(findMapField(campaign, "targeting"))
+			if proposedTargeting == nil {
+				proposedTargeting = map[string]any{}
+			}
+			for key, value := range targeting {
+				proposedTargeting[key] = value
+			}
+			proposedCampaign["targeting"] = proposedTargeting
+		}
+		if err := validateCampaignStrategyContext(proposedCampaign, strategy); err != nil {
+			return nil, nil, err
+		}
+		return reads, warnings, nil
+	}
+	if !create && !hasStrategy {
+		return reads, warnings, nil
+	}
+	adGroup := payload
+	if !create {
+		var err error
+		adGroup, err = readObject("strategy_adgroup", "adgroups", id)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	campaignID := stringField(adGroup, "campaignId")
+	if !decimalIDPattern.MatchString(campaignID) {
+		return nil, nil, errors.New("ad group strategy requires a confirmed parent campaign")
+	}
+	campaign, err := readObject("strategy_parent_campaign", "campaigns", campaignID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := validateAdGroupStrategyContext(campaign, adGroup, strategy, create); err != nil {
+		return nil, nil, err
+	}
+	return reads, warnings, nil
+}
+
+func mutationWarnings(payload map[string]any) []operations.OperationWarning {
+	warnings := make([]operations.OperationWarning, 0, 3)
+	if _, exists := payload["cpaCap"]; exists {
+		warnings = append(warnings, operations.OperationWarning{Code: "CPA_CAP_DEPRECATED", Message: "Apple has deprecated cpaCap. This preview preserves the legacy field and does not convert the campaign strategy."})
+	}
+	strategy, _ := payload["bidStrategy"].(map[string]any)
+	if stringField(strategy, "bidStrategyType") == "MAX_CONVERSIONS" {
+		warnings = append(warnings,
+			operations.OperationWarning{Code: "MAX_CONVERSIONS_HISTORY_UNCONFIRMED", Message: "This explicit strategy request does not verify the optimizer's minimum of 14 completed days and 70 tap installs. Allow at least two weeks to assess learning after the change."},
+			operations.OperationWarning{Code: "MAX_CONVERSIONS_BUDGET_GUIDANCE", Message: "Apple recommends a daily budget sufficient for approximately five conversions. This guidance is not an eligibility requirement."},
+		)
+	}
+	return warnings
+}
+
+func effectiveBidStrategy(current, requested map[string]any) (map[string]any, error) {
+	strategy := cloneObject(current)
+	if strategy == nil {
+		strategy = map[string]any{}
+	}
+	for key, value := range requested {
+		strategy[key] = value
+	}
+	if stringField(strategy, "bidStrategyType") == "" || stringField(strategy, "bidStrategyGoal") == "" {
+		return nil, errors.New("current bid strategy type and goal are required for a partial update")
+	}
+	if err := validateBidStrategy(strategy); err != nil {
+		return nil, err
+	}
+	return strategy, nil
+}
+
+func validateCampaignStrategyContext(campaign, requested map[string]any) error {
+	if stringField(campaign, "promotedObjectType") != "APPSTORE_APP" {
+		return errors.New("bid strategies require an APPSTORE_APP campaign")
+	}
+	current, _ := campaign["bidStrategy"].(map[string]any)
+	strategy, err := effectiveBidStrategy(current, requested)
+	if err != nil {
+		return err
+	}
+	if stringField(campaign, "billingEvent") != "TAPS" {
+		return errors.New("App Store bid strategies require campaign billingEvent TAPS")
+	}
+	targeting, _ := campaign["targeting"].(map[string]any)
+	placement, _ := targeting["supplyPlacement"].(map[string]any)
+	placements := stringSlice(placement["include"])
+	if len(placements) != 1 {
+		return errors.New("bid strategy requires exactly one confirmed App Store placement")
+	}
+	switch placements[0] {
+	case "APPSTORE_SEARCH_RESULTS", "APPSTORE_SEARCH_TAB", "APPSTORE_TODAY_TAB", "APPSTORE_PRODUCT_PAGES":
+	default:
+		return errors.New("bid strategy placement is outside App Store scope")
+	}
+	if stringField(strategy, "bidStrategyType") == "MAX_CONVERSIONS" && placements[0] != "APPSTORE_SEARCH_RESULTS" {
+		return errors.New("MAX_CONVERSIONS requires APPSTORE_SEARCH_RESULTS")
+	}
+	return nil
+}
+
+func validateAdGroupStrategyContext(campaign, adGroup, requested map[string]any, create bool) error {
+	parent, _ := campaign["bidStrategy"].(map[string]any)
+	if err := validateCampaignStrategyContext(campaign, parent); err != nil {
+		return err
+	}
+	if stringField(adGroup, "pricingModel") != "CPT" {
+		return errors.New("App Store ad group strategies require pricingModel CPT")
+	}
+	current, _ := adGroup["bidStrategy"].(map[string]any)
+	if current == nil || create {
+		current = parent
+	}
+	strategy, err := effectiveBidStrategy(current, requested)
+	if err != nil {
+		return err
+	}
+	if stringField(strategy, "bidStrategyType") != stringField(parent, "bidStrategyType") || stringField(strategy, "bidStrategyGoal") != stringField(parent, "bidStrategyGoal") {
+		return errors.New("ad group bid strategy must match the parent campaign type and goal")
+	}
+	if !create && stringField(parent, "bidStrategyType") == "MAX_CONVERSIONS" && requested != nil {
+		if stringField(requested, "bidStrategyType") != "MAX_CONVERSIONS" || stringField(requested, "bidStrategyGoal") != "INSTALL" {
+			return errors.New("automated ad group updates must echo the parent MAX_CONVERSIONS and INSTALL pair")
+		}
+		if _, exists := requested["bid"]; exists {
+			bid, _ := requested["bid"].(map[string]any)
+			amount, ok := new(big.Rat).SetString(stringField(bid, "amount"))
+			if !ok || amount.Sign() != 0 {
+				return errors.New("automated ad group updates may only echo a zero bid")
+			}
+		}
+	}
+	return nil
 }

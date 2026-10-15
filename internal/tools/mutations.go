@@ -62,7 +62,7 @@ func MutationSpecs() []Spec {
 		{Name: "ad_group_search_match_preview", Description: "Preview enabling or disabling Apple Search Match for a Search Results ad group.", Class: "mutation_preview"},
 		{Name: "ad_group_targeting_preview", Description: "Preview App Store-only ad-group targeting.", Class: "mutation_preview"},
 		{Name: "ad_group_bid_preview", Description: "Preview an ad-group default bid update with decimal amount and currency.", Class: "mutation_preview"},
-		{Name: "ad_group_cpa_cap_preview", Description: "Preview an ad-group CPA cap update with decimal amount and currency.", Class: "mutation_preview"},
+		{Name: "ad_group_cpa_cap_preview", Description: "Deprecated by Apple: preview a legacy ad-group CPA cap update; retained for compatibility without automatic strategy conversion.", Class: "mutation_preview"},
 		{Name: "keyword_create_preview", Description: "Preview creation of one targeting keyword.", Class: "mutation_preview"},
 		{Name: "keyword_update_preview", Description: "Preview a targeting keyword update.", Class: "mutation_preview"},
 		{Name: "keyword_bid_preview", Description: "Preview a targeting keyword bid update.", Class: "mutation_preview"},
@@ -267,7 +267,12 @@ func (s *Service) createPreviewPayload(ctx context.Context, store *operations.St
 	if err != nil {
 		return failedPreview(err)
 	}
-	preview, err := store.PreviewComposite(ctx, s.manager, account.Profile, account.AdAccountID, name, nil, payload, []operations.VerificationRead{{Name: "affected_inventory", Operation: verify, Scopes: resourceMutationScopes(resource, impact, payload, true)}}, mutation, operations.PreviewOptions{Impact: impact, Create: &operations.CreateExpectation{Resource: resource, Expected: payload}})
+	evidence, warnings, err := s.bidStrategyEvidence(ctx, account, resource, "", payload, true)
+	if err != nil {
+		return failedPreview(err)
+	}
+	reads := append([]operations.VerificationRead{{Name: "affected_inventory", Operation: verify, Scopes: resourceMutationScopes(resource, impact, payload, true)}}, evidence...)
+	preview, err := store.PreviewComposite(ctx, s.manager, account.Profile, account.AdAccountID, name, nil, payload, reads, mutation, operations.PreviewOptions{Impact: impact, Warnings: warnings, Create: &operations.CreateExpectation{Resource: resource, Expected: payload}})
 	if err != nil {
 		return failedPreview(err)
 	}
@@ -336,7 +341,12 @@ func (s *Service) updatePreviewPayloadWithScopes(ctx context.Context, store *ope
 	}
 	scopes := resourceMutationScopes(resource, impact, payload, false)
 	scopes = append(scopes, extraScopes...)
-	preview, err := store.PreviewComposite(ctx, s.manager, account.Profile, account.AdAccountID, name, []string{id}, payload, []operations.VerificationRead{{Name: "current", Operation: verify, Scopes: scopes}}, mutation, operations.PreviewOptions{Impact: impact})
+	evidence, warnings, err := s.bidStrategyEvidence(ctx, account, resource, id, payload, false)
+	if err != nil {
+		return failedPreview(err)
+	}
+	reads := append([]operations.VerificationRead{{Name: "current", Operation: verify, Scopes: scopes}}, evidence...)
+	preview, err := store.PreviewComposite(ctx, s.manager, account.Profile, account.AdAccountID, name, []string{id}, payload, reads, mutation, operations.PreviewOptions{Impact: impact, Warnings: warnings})
 	if err != nil {
 		return failedPreview(err)
 	}
@@ -1162,7 +1172,7 @@ func addPreviewTool[In any](server *mcp.Server, item Spec, handler mcp.ToolHandl
 	destructive := false
 	open := true
 	mcp.AddTool(server, &mcp.Tool{
-		Name: item.Name, Description: item.Description,
+		Name: item.Name, Description: item.Description, InputSchema: mutationInputSchema[In](item.Name),
 		Annotations: &mcp.ToolAnnotations{Title: strings.ReplaceAll(item.Name, "_", " "), ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &open},
 	}, handler)
 }

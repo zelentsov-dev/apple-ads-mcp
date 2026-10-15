@@ -57,12 +57,33 @@ func classifyError(err error) (output ErrorOutput) {
 		}
 	}
 
+	var rateError *appleads.RateLimitError
+	if errors.As(err, &rateError) {
+		hint := "honor the rate-limit delay; retry reads only, and create a fresh preview before any newly authorized write"
+		if rateError.Code == "RATE_LIMIT_TIMING_INVALID" {
+			hint = "inspect the upstream rate-limit timing; restart this server only after timing is verified; do not resubmit a write"
+		}
+		return ErrorOutput{
+			Type: "rate_limit_error", Message: rateError.Error(), Code: rateError.Code,
+			Retryable: !rateError.Mutation && rateError.Cause == nil && rateError.Code != "RATE_LIMIT_TIMING_INVALID",
+			Details:   map[string]any{"rateLimit": rateError.RateLimit, "nextRequestSent": false},
+			Hint:      hint,
+		}
+	}
+
 	var apiError *appleads.APIError
 	if errors.As(err, &apiError) {
+		details := make(map[string]any, len(apiError.Details)+1)
+		for key, value := range apiError.Details {
+			details[key] = value
+		}
+		if rate := apiError.RateLimit; rate.Limit != "" || rate.Remaining != "" || rate.Reset != "" || rate.RetryAfter != 0 {
+			details["rateLimit"] = rate
+		}
 		return ErrorOutput{
 			Type: "apple_api_error", Message: apiError.Message, HTTPStatus: apiError.HTTPStatus,
 			Code: apiError.Code, ResponseFormat: apiError.ResponseFormat, Retryable: apiError.Retryable,
-			Details: apiError.Details, AppleBody: apiError.Body, Hint: appleAPIHint(apiError),
+			Details: details, AppleBody: apiError.Body, Hint: appleAPIHint(apiError),
 		}
 	}
 

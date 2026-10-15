@@ -137,3 +137,11 @@ func reportMetricFixtures(days int) []any {
 	}
 	return result
 }
+
+func TestDailyOptimizerRejectsHourlyAndMalformedDatesEvenForEmptyMetrics(t *testing.T) {
+	for _, date := range []any{"2026-08-24T01:00:00Z", "2026-08-24 01:00", "2026-02-30", "2026-8-24", "", nil, 20260824} {
+		if _, err := granularDailyMetrics(map[string]any{"granularMetrics": []any{map[string]any{"date": date}}}, "USD"); err == nil {
+			t.Fatalf("date %v must not become empty zero metrics", date)
+		}
+	}
+}

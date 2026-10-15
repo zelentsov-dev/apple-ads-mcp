@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -94,7 +95,11 @@ func TestRetryAfterAndRateLimit(t *testing.T) {
 	defer server.Close()
 	client := testClient(t, server, &fakeTokens{value: "token"})
 	var delay time.Duration
-	client.sleep = func(_ context.Context, value time.Duration) error { delay = value; return nil }
+	originalSleep := client.sleep
+	client.sleep = func(ctx context.Context, value time.Duration) error {
+		delay = value
+		return originalSleep(ctx, value)
+	}
 	result, err := client.Do(context.Background(), "", ACLs())
 	if err != nil {
 		t.Fatal(err)
@@ -402,7 +407,22 @@ func testClient(t *testing.T, server *httptest.Server, tokens TokenSource) *Clie
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.sleep = func(context.Context, time.Duration) error { return nil }
+	var clockMu sync.Mutex
+	now := time.Now()
+	client.now = func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		return now
+	}
+	client.sleep = func(ctx context.Context, delay time.Duration) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		clockMu.Lock()
+		now = now.Add(delay)
+		clockMu.Unlock()
+		return nil
+	}
 	return client
 }
 

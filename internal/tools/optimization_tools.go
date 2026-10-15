@@ -1,7 +1,9 @@
 package tools
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/zelentsov-dev/apple-ads-mcp/internal/appleads"
+	"github.com/zelentsov-dev/apple-ads-mcp/internal/operations"
 	"github.com/zelentsov-dev/apple-ads-mcp/internal/optimization"
 )
 
@@ -163,10 +166,6 @@ func (s *Service) optimizationReport(ctx context.Context, policy optimization.Po
 	return dailyMetrics(rows, resourceID, policy.MaxTotalDailyBudget.Currency)
 }
 
-func optimizationCampaignReportOperation(policy optimization.Policy, kind, resourceID string, start, end time.Time) (appleads.Operation, error) {
-	return optimizationCampaignReportOperationAtOffset(policy, kind, resourceID, start, end, 0)
-}
-
 func optimizationCampaignReportOperationAtOffset(policy optimization.Policy, kind, resourceID string, start, end time.Time, offset int) (appleads.Operation, error) {
 	request, err := optimizationCampaignReportRequest(policy, kind, resourceID, start, end, offset)
 	if err != nil {
@@ -199,10 +198,6 @@ func (s *Service) optimizationBiddables(ctx context.Context, policy optimization
 		resourceType = "ad_group"
 	}
 	return biddableRows(rows, resourceType, policy.MaxTotalDailyBudget.Currency)
-}
-
-func optimizationBiddableReportOperation(policy optimization.Policy, kind, campaignID string, start, end time.Time) (appleads.Operation, error) {
-	return optimizationBiddableReportOperationAtOffset(policy, kind, campaignID, start, end, 0)
 }
 
 func optimizationBiddableReportOperationAtOffset(policy optimization.Policy, kind, campaignID string, start, end time.Time, offset int) (appleads.Operation, error) {
@@ -260,21 +255,30 @@ func (s *Service) attachOptimizationRecommendations(ctx context.Context, policy 
 }
 
 func campaignEvidenceFromObject(campaignID string, value any) optimization.CampaignEvidence {
-	budget := findMapField(value, "dailyBudget")
-	if nested := findMapField(budget, "value"); nested != nil {
+	object, _ := value.(map[string]any)
+	budget, _ := object["dailyBudget"].(map[string]any)
+	if nested, ok := budget["value"].(map[string]any); ok {
 		budget = nested
 	}
-	strategy := findMapField(value, "bidStrategy")
+	strategy, _ := object["bidStrategy"].(map[string]any)
+	targeting, _ := object["targeting"].(map[string]any)
+	placementData, _ := targeting["supplyPlacement"].(map[string]any)
+	placements := stringSlice(placementData["include"])
+	placement := ""
+	if len(placements) == 1 {
+		placement = placements[0]
+	}
+	eligible := validateCampaignStrategyContext(object, map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL"}) == nil
 	return optimization.CampaignEvidence{
 		CampaignID:             campaignID,
-		Name:                   findStringField(value, "name"),
-		Status:                 strings.ToUpper(findStringField(value, "status")),
-		SystemStatus:           strings.ToUpper(findStringField(value, "systemStatus")),
-		Placement:              strings.ToUpper(firstNonEmptyTool(findStringField(value, "supplyPlacement"), findStringField(value, "adChannelType"))),
-		BidStrategy:            strings.ToUpper(firstNonEmptyTool(findStringField(strategy, "bidStrategyType"), findStringField(value, "bidStrategyType"))),
-		DailyBudget:            appleads.Money{Amount: findStringField(budget, "amount"), Currency: strings.ToUpper(findStringField(budget, "currency"))},
-		MaxConversionsEligible: containsStringValue(value, "MAX_CONVERSIONS") || containsTrueField(value, "maxConversionsEligible"),
-		ModificationTime:       findStringField(value, "modificationTime"),
+		Name:                   stringField(object, "name"),
+		Status:                 strings.ToUpper(stringField(object, "status")),
+		SystemStatus:           strings.ToUpper(stringField(object, "systemStatus")),
+		Placement:              placement,
+		BidStrategy:            stringField(strategy, "bidStrategyType"),
+		DailyBudget:            appleads.Money{Amount: stringField(budget, "amount"), Currency: strings.ToUpper(stringField(budget, "currency"))},
+		MaxConversionsEligible: eligible,
+		ModificationTime:       stringField(object, "modificationTime"),
 	}
 }
 
@@ -561,4 +565,43 @@ func publicErrorMessage(err error) string {
 		return apiError.Error()
 	}
 	return "request failed"
+}
+
+type optimizationEvidenceCapture struct {
+	appleAdsManager
+	reads []operations.VerificationRead
+	err   error
+}
+
+func (capture *optimizationEvidenceCapture) Do(ctx context.Context, profile, account string, operation appleads.Operation) (appleads.Result, error) {
+	if operation.IsMutation() {
+		return appleads.Result{}, errors.New("optimization evidence must be read-only")
+	}
+	if len(capture.reads) >= 400 {
+		capture.err = errors.New("optimization evidence exceeds the bounded read count")
+		return appleads.Result{}, capture.err
+	}
+	result, err := capture.appleAdsManager.Do(ctx, profile, account, operation)
+	if err != nil {
+		return result, err
+	}
+	data, err := json.Marshal(result.Data)
+	if err != nil {
+		capture.err = err
+		return appleads.Result{}, err
+	}
+	var expected any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&expected); err != nil {
+		capture.err = err
+		return appleads.Result{}, err
+	}
+	pagination := result.Pagination
+	read := operations.VerificationRead{Name: fmt.Sprintf("optimizer_evidence_%03d", len(capture.reads)), Operation: operation, Expected: expected, ExpectedPagination: &pagination}
+	if strings.HasPrefix(operation.Path(), "campaigns/") && !strings.HasSuffix(operation.Path(), "/query") {
+		read.Scopes = []string{operations.ObjectMutationScope(strings.TrimPrefix(operation.Path(), "campaigns/"))}
+	}
+	capture.reads = append(capture.reads, read)
+	return result, nil
 }

@@ -517,6 +517,11 @@ func (input QueryInput) reportRequest(kind string) (map[string]any, error) {
 			return nil, fmt.Errorf("sorting order %q is not supported", sorting.Order)
 		}
 	}
+	for _, dimension := range input.GroupBy {
+		if dimension == "storefront" {
+			return nil, errors.New("groupBy storefront is not supported; use countryOrRegion for country reporting")
+		}
+	}
 	groupBy := reportGroupBy(kind)
 	if err := validateSelectedFields("groupBy", input.GroupBy, groupBy); err != nil {
 		return nil, err
@@ -606,7 +611,7 @@ func reportMetadataFields() map[string][]string {
 func reportGroupBy(kind string) map[string]struct{} {
 	values := []string{"deviceClass", "countryOrRegion"}
 	if kind == "campaigns" || kind == "adgroups" {
-		values = append(values, "ageRange", "gender", "countryCode", "adminArea", "locality", "storefront")
+		values = append(values, "ageRange", "gender", "countryCode", "adminArea", "locality")
 	}
 	result := make(map[string]struct{}, len(values))
 	for _, value := range values {

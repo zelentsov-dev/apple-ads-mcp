@@ -27,7 +27,7 @@ type CampaignTargeting struct {
 type BidStrategy struct {
 	BidStrategyType string          `json:"bidStrategyType,omitempty" jsonschema:"Apple bid strategy type"`
 	BidStrategyGoal string          `json:"bidStrategyGoal,omitempty" jsonschema:"Apple bid strategy goal"`
-	Bid             *appleads.Money `json:"bid,omitempty" jsonschema:"manual bid amount and account currency"`
+	Bid             *appleads.Money `json:"bid,omitempty" jsonschema:"bid or automated ceiling in account currency; auto-bidding ad group updates require zero"`
 }
 
 type CPAGoal struct {
@@ -49,7 +49,7 @@ type CampaignCreatePayload struct {
 	Status             string              `json:"status" jsonschema:"campaign status"`
 	DailyBudget        MoneyValue          `json:"dailyBudget" jsonschema:"daily budget value in account currency"`
 	Targeting          CampaignTargeting   `json:"targeting" jsonschema:"App Store placement and countries"`
-	BidStrategy        *BidStrategy        `json:"bidStrategy,omitempty" jsonschema:"optional campaign bid strategy"`
+	BidStrategy        *BidStrategy        `json:"bidStrategy" jsonschema:"required type and goal pair; manual strategies require a positive bid"`
 }
 
 type CampaignUpdatePayload struct {
@@ -127,7 +127,7 @@ type AdGroupCreatePayload struct {
 	Status                    string              `json:"status"`
 	AutomatedKeywordsRequired *bool               `json:"automatedKeywordsRequired,omitempty"`
 	BidStrategy               *BidStrategy        `json:"bidStrategy,omitempty"`
-	CPACap                    *CPAGoal            `json:"cpaCap,omitempty"`
+	CPACap                    *CPAGoal            `json:"cpaCap,omitempty" jsonschema:"Deprecated by Apple; retained for compatibility without automatic strategy conversion"`
 	Targeting                 *AdGroupTargeting   `json:"targeting,omitempty"`
 }
 
@@ -139,7 +139,7 @@ type AdGroupUpdatePayload struct {
 	Status                    *string             `json:"status,omitempty"`
 	AutomatedKeywordsRequired *bool               `json:"automatedKeywordsRequired,omitempty"`
 	BidStrategy               *BidStrategy        `json:"bidStrategy,omitempty"`
-	CPACap                    *CPAGoal            `json:"cpaCap,omitempty"`
+	CPACap                    *CPAGoal            `json:"cpaCap,omitempty" jsonschema:"Deprecated by Apple; retained for compatibility without automatic strategy conversion"`
 	Targeting                 *AdGroupTargeting   `json:"targeting,omitempty"`
 }
 

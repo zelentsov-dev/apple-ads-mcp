@@ -302,7 +302,7 @@ func runV02PreviewMatrix(t *testing.T, ctx context.Context, session *mcp.ClientS
 				"supplyPlacement": map[string]any{"include": []string{"APPSTORE_SEARCH_RESULTS"}},
 				"countryOrRegion": map[string]any{"include": []string{storefront}},
 			},
-			"bidStrategy": map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP"},
+			"bidStrategy": map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": map[string]any{"amount": "0.25", "currency": state.currency}},
 		},
 	})
 	previewOnly(t, ctx, session, "campaign_update_preview", mergeAccount(account, map[string]any{"id": campaignID, "payload": map[string]any{"status": "PAUSED"}}))

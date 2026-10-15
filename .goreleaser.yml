@@ -4,6 +4,8 @@ builds:
   - id: apple-ads-mcp
     main: ./cmd/apple-ads-mcp
     binary: apple-ads-mcp
+    flags:
+      - -trimpath
     env:
       - CGO_ENABLED=0
     goos:
@@ -30,7 +32,8 @@ archives:
       - .mcp.json
       - .codex-plugin/plugin.json
       - skills/apple-ads-operator/**
-      - docs/**
+      - docs/MIGRATION-*.md
+      - docs/ROADMAP.md
       - api-contract/**
 
 checksum:
@@ -51,13 +54,15 @@ release:
   mode: replace
   make_latest: true
   header: |
-    Apple Ads MCP {{ .Tag }} adds typed, actionable diagnostics across text and structured MCP results. Apple `4xx` details are bounded and sanitized, write gates explain how to opt in safely, and receipt failures now distinguish expired, used, missing, drifted, transport, and ambiguous outcomes.
+    Apple Ads MCP {{ .Tag }} honors Apple rate-limit headers and Retry-After without shortening the required wait. Concurrent reads share a bounded per-profile cooldown; writes blocked before dispatch are distinguished from ambiguous writes and are never automatically retried.
 
-    Targeting-keyword bulk creation now supports zero-based integer correlation IDs and one aggregate receipt across one or more ad groups. Successful item IDs are preserved and verified directly, partial Apple failures remain visible, and semantic object, inventory, relationship, and cascade reservations prevent overlapping mutations from dispatching against stale state.
+    Bid strategies now validate the matching type and goal, creation versus update rules, account currency, placement, and parent campaign state. Explicit strategy requests do not require optimizer history minimums; conservative optimizer thresholds remain intact. Preview warnings persist with their receipt.
 
-    Read tools keep compatible legacy inputs while adding named ID aliases, typed query shortcuts, stricter keyword scopes, zero-metric reports, bounded change-history windows, compact locale output, exact Unicode owned-app fallback, and section-level opportunity diagnostics. Impression-share Apple errors remain honest upstream failures, and empty Search Results ad inventories are explained without synthesizing objects.
+    Reports reject the retired storefront grouping with a countryOrRegion migration hint and preserve date strings. CPA cap remains available for compatibility, with deprecation annotations and warnings. Tool names remain unchanged. See docs/MIGRATION-v0.3.7.md for compatibility details.
 
-    Tool names remain stable. Existing `id`, advanced `filters`, and top-level keyword bulk `adGroupId` inputs remain supported. See `docs/MIGRATION-v0.3.6.md` for the complete compatibility and migration contract.
+    The build baseline is Go 1.26.9, including the pinned Docker builder, to incorporate standard-library security fixes.
+
+    Validation uses synthetic data and cross-platform CI. This release does not claim live mutation acceptance and does not change advertising campaigns.
   footer: |
     Archives include SHA-256 checksums and SPDX SBOMs. See the README for installation, Apple Ads onboarding, safety controls, and known platform behavior.
 

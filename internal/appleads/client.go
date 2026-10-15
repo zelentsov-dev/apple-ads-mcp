@@ -29,6 +29,8 @@ type Client struct {
 	tokens     TokenSource
 	baseURL    *url.URL
 	sleep      func(context.Context, time.Duration) error
+	now        func() time.Time
+	limits     rateLimiter
 }
 
 func NewClient(tokens TokenSource) *Client {
@@ -43,6 +45,7 @@ func NewClient(tokens TokenSource) *Client {
 		tokens:     tokens,
 		baseURL:    baseURL,
 		sleep:      sleepContext,
+		now:        time.Now,
 	}
 }
 
@@ -51,7 +54,7 @@ func NewClientForTest(tokens TokenSource, client *http.Client, baseURL string) (
 	if err != nil {
 		return nil, err
 	}
-	return &Client{httpClient: client, tokens: tokens, baseURL: parsed, sleep: sleepContext}, nil
+	return &Client{httpClient: client, tokens: tokens, baseURL: parsed, sleep: sleepContext, now: time.Now}, nil
 }
 
 func (c *Client) Do(ctx context.Context, adAccountID string, operation Operation) (Result, error) {
@@ -67,8 +70,14 @@ func (c *Client) Do(ctx context.Context, adAccountID string, operation Operation
 		maxAttempts = 3
 	}
 	refreshed := false
+	budget := waitBudget{remaining: maxRateLimitWait}
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		probe, err := c.acquireRateLimit(ctx, operation.mutation, &budget)
+		if err != nil {
+			return Result{}, err
+		}
 		result, response, sent, err := c.doOnce(ctx, adAccountID, operation, body)
+		c.observeRateLimit(result, response, probe, attempt)
 		if err != nil {
 			if operation.mutation && sent {
 				return Result{}, &AmbiguousWriteError{Cause: err}
@@ -76,7 +85,7 @@ func (c *Client) Do(ctx context.Context, adAccountID string, operation Operation
 			if attempt == maxAttempts {
 				return Result{}, err
 			}
-			if err := c.sleep(ctx, retryDelay(attempt, 0)); err != nil {
+			if err := c.waitForRetry(ctx, retryDelay(attempt, 0), result.RateLimit, &budget); err != nil {
 				return Result{}, err
 			}
 			continue
@@ -88,17 +97,27 @@ func (c *Client) Do(ctx context.Context, adAccountID string, operation Operation
 			continue
 		}
 		if retryableStatus(response.StatusCode) && operation.retryReads && attempt < maxAttempts {
+			if response.StatusCode == http.StatusTooManyRequests {
+				continue
+			}
 			delay := retryDelay(attempt, result.RateLimit.RetryAfter)
-			if err := c.sleep(ctx, delay); err != nil {
+			if result.RateLimit.retrySet {
+				delay = time.Duration(result.RateLimit.RetryAfter) * time.Second
+			}
+			if err := c.waitForRetry(ctx, delay, result.RateLimit, &budget); err != nil {
 				return Result{}, err
 			}
 			continue
 		}
 		if operation.mutation && response.StatusCode >= http.StatusInternalServerError {
-			return Result{}, &AmbiguousWriteError{Cause: apiError(response.StatusCode, result.Data)}
+			return Result{}, &AmbiguousWriteError{Cause: apiErrorWithRateLimit(response.StatusCode, result.Data, result.RateLimit)}
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			return Result{}, apiError(response.StatusCode, result.Data)
+			apiErr := apiErrorWithRateLimit(response.StatusCode, result.Data, result.RateLimit)
+			if operation.mutation {
+				apiErr.Retryable = false
+			}
+			return Result{}, apiErr
 		}
 		return result, nil
 	}
@@ -133,18 +152,20 @@ func (c *Client) doOnce(ctx context.Context, adAccountID string, operation Opera
 		return Result{}, nil, true, fmt.Errorf("execute Apple Ads request: %w", err)
 	}
 	defer resp.Body.Close()
+	rate := rateLimitFromHeadersAt(resp.Header, c.now())
+	partial := Result{Status: resp.StatusCode, RateLimit: rate}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody+1))
 	if err != nil {
-		return Result{}, resp, true, fmt.Errorf("read Apple Ads response: %w", err)
+		return partial, resp, true, fmt.Errorf("read Apple Ads response: %w", err)
 	}
 	if len(data) > maxResponseBody {
-		return Result{}, resp, true, errors.New("response from Apple Ads exceeds size limit")
+		return partial, resp, true, errors.New("response from Apple Ads exceeds size limit")
 	}
 	if len(bytes.TrimSpace(data)) == 0 && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
 		return Result{
 			Data:      map[string]any{"responseFormat": "empty"},
 			Status:    resp.StatusCode,
-			RateLimit: rateLimitFromHeaders(resp.Header),
+			RateLimit: rate,
 		}, resp, true, nil
 	}
 	decoded, err := decodeEnvelope(data)
@@ -153,13 +174,13 @@ func (c *Client) doOnce(ctx context.Context, adAccountID string, operation Opera
 			return Result{
 				Data:      map[string]any{"message": http.StatusText(resp.StatusCode), "responseFormat": "non_json"},
 				Status:    resp.StatusCode,
-				RateLimit: rateLimitFromHeaders(resp.Header),
+				RateLimit: rate,
 			}, resp, true, nil
 		}
-		return Result{}, resp, true, err
+		return partial, resp, true, err
 	}
 	decoded.Status = resp.StatusCode
-	decoded.RateLimit = rateLimitFromHeaders(resp.Header)
+	decoded.RateLimit = rate
 	return decoded, resp, true, nil
 }
 
@@ -234,7 +255,7 @@ func stringInt(value any) int {
 	return result
 }
 
-func apiError(status int, data any) error {
+func apiError(status int, data any) *APIError {
 	result := &APIError{HTTPStatus: status, Message: http.StatusText(status), Retryable: retryableStatus(status)}
 	if raw, ok := data.(map[string]any); ok {
 		result.Code = safeErrorText(firstString(raw, "code", "errorCode"), 128)
@@ -373,16 +394,6 @@ func firstString(raw map[string]any, keys ...string) string {
 
 func retryableStatus(status int) bool {
 	return status == http.StatusTooManyRequests || status >= http.StatusInternalServerError && status <= 599
-}
-
-func retryDelay(attempt, retryAfter int) time.Duration {
-	if retryAfter > 0 {
-		if retryAfter > 5 {
-			retryAfter = 5
-		}
-		return time.Duration(retryAfter) * time.Second
-	}
-	return time.Duration(attempt*200) * time.Millisecond
 }
 
 func sleepContext(ctx context.Context, delay time.Duration) error {

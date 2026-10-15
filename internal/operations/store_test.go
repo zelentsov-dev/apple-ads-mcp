@@ -957,3 +957,48 @@ func TestDeleteVerificationTreatsNotFoundAsDeleted(t *testing.T) {
 		t.Fatalf("verification=%+v err=%v", verification, err)
 	}
 }
+
+func TestPreviewBindsValidatedDependencyAndPersistsWarnings(t *testing.T) {
+	store := NewStore()
+	read, _ := appleads.ResourceGet("campaigns", "123")
+	write, _ := appleads.ResourceUpdate("campaigns", "123", map[string]any{"status": "PAUSED"})
+	before := map[string]any{"status": "ENABLED"}
+	executor := &fakeExecutor{state: map[string]any{"status": "PAUSED"}}
+	reads := []VerificationRead{{Name: "validated_campaign", Operation: read, Expected: before}}
+	options := PreviewOptions{Warnings: []OperationWarning{{Code: "TEST_WARNING", Message: "Synthetic warning"}}}
+	if _, err := store.PreviewComposite(t.Context(), executor, "synthetic", "456", "pause", []string{"123"}, map[string]any{"status": "PAUSED"}, reads, write, options); !errors.Is(err, ErrStateDrift) {
+		t.Fatalf("changed between validation and preview: %v", err)
+	}
+	executor.state = before
+	preview, err := store.PreviewComposite(t.Context(), executor, "synthetic", "456", "pause", []string{"123"}, map[string]any{"status": "PAUSED"}, reads, write, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspected, used, err := store.Inspect(preview.Receipt)
+	if err != nil || used || len(inspected.Warnings) != 1 || inspected.Warnings[0].Code != "TEST_WARNING" {
+		t.Fatalf("preview=%+v used=%v err=%v", inspected, used, err)
+	}
+	executor.state = map[string]any{"status": "PAUSED"}
+	if _, err := store.Apply(t.Context(), executor, preview.Receipt); !errors.Is(err, ErrStateDrift) || executor.writes != 0 {
+		t.Fatalf("writes=%d err=%v", executor.writes, err)
+	}
+}
+
+func TestVerificationDependencyProjectsOnlyNeededFields(t *testing.T) {
+	store := NewStore()
+	read, _ := appleads.AdAccount("456")
+	write, _ := appleads.ResourceUpdate("campaigns", "123", map[string]any{"status": "PAUSED"})
+	executor := &fakeExecutor{state: map[string]any{"currency": "USD", "privateBillingField": "synthetic-private"}}
+	preview, err := store.PreviewComposite(t.Context(), executor, "synthetic", "456", "pause", nil, map[string]any{"status": "PAUSED"}, []VerificationRead{{Name: "currency", Operation: read, Expected: map[string]any{"currency": "USD"}, Fields: []string{"currency"}}}, write, PreviewOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(preview)
+	if strings.Contains(string(data), "synthetic-private") {
+		t.Fatalf("unexpected private evidence: %s", data)
+	}
+	executor.state = map[string]any{"currency": "USD", "privateBillingField": "changed-private"}
+	if _, err := store.Apply(t.Context(), executor, preview.Receipt); err != nil || executor.writes != 1 {
+		t.Fatalf("writes=%d err=%v", executor.writes, err)
+	}
+}

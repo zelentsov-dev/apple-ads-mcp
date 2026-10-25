@@ -1002,3 +1002,29 @@ func TestVerificationDependencyProjectsOnlyNeededFields(t *testing.T) {
 		t.Fatalf("writes=%d err=%v", executor.writes, err)
 	}
 }
+
+func TestMatchesExpectedSubsetNormalizesDecimalMoneyAndNullReset(t *testing.T) {
+	expected := map[string]any{
+		"name":        "Campaign",
+		"dailyBudget": map[string]any{"value": map[string]any{"amount": "4.00", "currency": "USD"}},
+		"bidStrategy": map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": nil},
+	}
+	current := map[string]any{
+		"id":          "100",
+		"name":        "Campaign",
+		"dailyBudget": map[string]any{"value": map[string]any{"amount": "4", "currency": "USD"}},
+		"bidStrategy": map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP"},
+	}
+	if !matchesExpectedSubset(current, expected) {
+		t.Fatal("expected normalized decimal amount and omitted null bid to match")
+	}
+	currentWithResidualBid := map[string]any{
+		"id":          "100",
+		"name":        "Campaign",
+		"dailyBudget": map[string]any{"value": map[string]any{"amount": "4", "currency": "USD"}},
+		"bidStrategy": map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": map[string]any{"amount": "4", "currency": "USD"}},
+	}
+	if matchesExpectedSubset(currentWithResidualBid, expected) {
+		t.Fatal("expected residual non-null bid to fail null reset expectation")
+	}
+}

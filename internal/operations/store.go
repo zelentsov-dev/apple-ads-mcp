@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -1057,6 +1059,8 @@ func appendOrReplaceObject(values []ObjectVerification, value ObjectVerification
 	return append(values, value)
 }
 
+var decimalMoneyComparisonPattern = regexp.MustCompile(`^[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?$`)
+
 func matchesExpectedSubset(current any, expected map[string]any) bool {
 	if len(expected) == 0 {
 		return false
@@ -1067,6 +1071,12 @@ func matchesExpectedSubset(current any, expected map[string]any) bool {
 	}
 	for key, expectedValue := range expected {
 		currentValue, exists := currentMap[key]
+		if expectedValue == nil {
+			if exists && currentValue != nil {
+				return false
+			}
+			continue
+		}
 		if !exists {
 			return false
 		}
@@ -1077,6 +1087,9 @@ func matchesExpectedSubset(current any, expected map[string]any) bool {
 			}
 			continue
 		}
+		if key == "amount" && equalDecimalAmount(expectedValue, currentValue) {
+			continue
+		}
 		expectedHash, expectedErr := valueHash(expectedValue)
 		currentHash, currentErr := valueHash(currentValue)
 		if expectedErr != nil || currentErr != nil || expectedHash != currentHash {
@@ -1084,6 +1097,30 @@ func matchesExpectedSubset(current any, expected map[string]any) bool {
 		}
 	}
 	return true
+}
+
+func equalDecimalAmount(left, right any) bool {
+	leftText, leftOK := decimalAmountString(left)
+	rightText, rightOK := decimalAmountString(right)
+	if !leftOK || !rightOK {
+		return false
+	}
+	leftRat, leftValid := new(big.Rat).SetString(leftText)
+	rightRat, rightValid := new(big.Rat).SetString(rightText)
+	return leftValid && rightValid && leftRat.Cmp(rightRat) == 0
+}
+
+func decimalAmountString(value any) (string, bool) {
+	switch typed := value.(type) {
+	case string:
+		text := strings.TrimSpace(typed)
+		return text, decimalMoneyComparisonPattern.MatchString(text)
+	case json.Number:
+		text := strings.TrimSpace(typed.String())
+		return text, decimalMoneyComparisonPattern.MatchString(text)
+	default:
+		return "", false
+	}
 }
 
 func readVerificationState(ctx context.Context, executor Executor, profile, adAccountID string, reads []VerificationRead, requireComplete bool) (any, any, []ObjectVerification, error) {

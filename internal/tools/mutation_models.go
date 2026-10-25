@@ -27,7 +27,7 @@ type CampaignTargeting struct {
 type BidStrategy struct {
 	BidStrategyType string          `json:"bidStrategyType,omitempty" jsonschema:"Apple bid strategy type"`
 	BidStrategyGoal string          `json:"bidStrategyGoal,omitempty" jsonschema:"Apple bid strategy goal"`
-	Bid             *appleads.Money `json:"bid,omitempty" jsonschema:"bid or automated ceiling in account currency; auto-bidding ad group updates require zero"`
+	Bid             *appleads.Money `json:"bid,omitempty" jsonschema:"campaign TargetCpa for MAX_CONVERSIONS or ad-group bid in account currency; auto-bidding ad group updates require zero"`
 }
 
 type CPAGoal struct {
@@ -49,7 +49,7 @@ type CampaignCreatePayload struct {
 	Status             string              `json:"status" jsonschema:"campaign status"`
 	DailyBudget        MoneyValue          `json:"dailyBudget" jsonschema:"daily budget value in account currency"`
 	Targeting          CampaignTargeting   `json:"targeting" jsonschema:"App Store placement and countries"`
-	BidStrategy        *BidStrategy        `json:"bidStrategy" jsonschema:"required type and goal pair; manual strategies require a positive bid"`
+	BidStrategy        *BidStrategy        `json:"bidStrategy" jsonschema:"required type and goal pair; MAX_CONVERSIONS requires a positive bid (TargetCpa) and MANUAL_CPT must not include bid"`
 }
 
 type CampaignUpdatePayload struct {

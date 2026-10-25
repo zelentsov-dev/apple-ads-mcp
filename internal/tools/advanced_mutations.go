@@ -45,6 +45,11 @@ func (s *Service) campaignBidStrategyPreview(store *operations.Store) func(conte
 		if err != nil {
 			return failedPreview(err)
 		}
+		if strategy, ok := payload["bidStrategy"].(map[string]any); ok && stringField(strategy, "bidStrategyType") == "MANUAL_CPT" {
+			if _, exists := strategy["bid"]; !exists {
+				strategy["bid"] = nil
+			}
+		}
 		return s.updatePreviewPayload(ctx, store, "campaigns", "campaign_bid_strategy", input.AccountInput, input.CampaignID, payload)
 	}
 }
@@ -91,6 +96,22 @@ func (s *Service) optimizationPlanPreview(store *operations.Store) func(context.
 			payload, err = typedPayloadMap(payload)
 			if err != nil {
 				return failedPreview(err)
+			}
+			if strategy, ok := payload["bidStrategy"].(map[string]any); ok {
+				switch stringField(strategy, "bidStrategyType") {
+				case "MANUAL_CPT":
+					if _, exists := strategy["bid"]; !exists {
+						strategy["bid"] = nil
+					}
+				case "MAX_CONVERSIONS":
+					if strategy["bid"] == nil && policy.TargetInstallCPA != nil {
+						bidMap, bidErr := typedPayloadMap(*policy.TargetInstallCPA)
+						if bidErr != nil {
+							return failedPreview(bidErr)
+						}
+						strategy["bid"] = bidMap
+					}
+				}
 			}
 			if err := validateTypedResourcePayload(resource, false, payload); err != nil {
 				return failedPreview(err)
@@ -193,7 +214,13 @@ func optimizationMutation(action optimization.PlanAction) (string, map[string]an
 		if strategyType == "MAX_CONVERSIONS" {
 			goal = "INSTALL"
 		}
-		return "campaigns", map[string]any{"bidStrategy": map[string]any{"bidStrategyType": strategyType, "bidStrategyGoal": goal}}, nil
+		strategy := map[string]any{"bidStrategyType": strategyType, "bidStrategyGoal": goal}
+		if money, ok := moneyFromAnyTool(action.After["bid"]); ok {
+			strategy["bid"] = money
+		} else if strategyType == "MANUAL_CPT" {
+			strategy["bid"] = nil
+		}
+		return "campaigns", map[string]any{"bidStrategy": strategy}, nil
 	case "bid_increase", "bid_decrease":
 		money, ok := moneyFromAnyTool(action.After["bid"])
 		if !ok {

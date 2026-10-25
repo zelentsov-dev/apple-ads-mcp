@@ -318,6 +318,13 @@ func (s *Service) updatePreviewPayload(ctx context.Context, store *operations.St
 }
 
 func (s *Service) updatePreviewPayloadWithScopes(ctx context.Context, store *operations.Store, resource, name string, account AccountInput, id string, payload map[string]any, extraScopes []string) (*mcp.CallToolResult, PreviewOutput, error) {
+	if resource == "campaigns" {
+		if strategy, ok := payload["bidStrategy"].(map[string]any); ok && stringField(strategy, "bidStrategyType") == "MANUAL_CPT" {
+			if _, exists := strategy["bid"]; !exists {
+				strategy["bid"] = nil
+			}
+		}
+	}
 	if err := validateTypedResourcePayload(resource, false, payload); err != nil {
 		return failedPreview(err)
 	}

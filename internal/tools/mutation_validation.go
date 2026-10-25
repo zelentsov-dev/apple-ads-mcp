@@ -102,7 +102,7 @@ func validateCampaignPayload(payload map[string]any, create bool) error {
 	} else if create {
 		return errors.New("campaign targeting is required")
 	}
-	if err := validateBidStrategyForOperation(payload["bidStrategy"], create, create); err != nil {
+	if err := validateBidStrategyForOperation("campaigns", payload["bidStrategy"], create, create); err != nil {
 		return err
 	}
 	return validateSchedule(payload)
@@ -171,7 +171,7 @@ func validateAdGroupPayload(payload map[string]any, create bool) error {
 	if status := stringField(payload, "status"); status != "" && !allowedStatus(status) {
 		return fmt.Errorf("unsupported ad group status %q", status)
 	}
-	if err := validateBidStrategyForOperation(payload["bidStrategy"], create, false); err != nil {
+	if err := validateBidStrategyForOperation("adgroups", payload["bidStrategy"], create, false); err != nil {
 		return err
 	}
 	if err := validateCPAGoal(payload["cpaCap"]); err != nil {
@@ -335,10 +335,10 @@ func parseISOTimestamp(value string) (time.Time, error) {
 }
 
 func validateBidStrategy(value any) error {
-	return validateBidStrategyForOperation(value, false, false)
+	return validateBidStrategyForOperation("adgroups", value, false, false)
 }
 
-func validateBidStrategyForOperation(value any, create, required bool) error {
+func validateBidStrategyForOperation(resource string, value any, create, required bool) error {
 	if value == nil {
 		if required {
 			return errors.New("campaign creation requires bidStrategy")
@@ -365,18 +365,41 @@ func validateBidStrategyForOperation(value any, create, required bool) error {
 			return fmt.Errorf("%s requires bidStrategyGoal %s; send type and goal together", strategyType, expected)
 		}
 	}
-	_, hasBid := strategy["bid"]
-	if create && strategyType == "MANUAL_CPT" && !hasBid {
+	bidVal, hasBid := strategy["bid"]
+	hasNonNilBid := hasBid && bidVal != nil
+	hasNilBid := hasBid && bidVal == nil
+	if resource == "campaigns" {
+		if strategyType == "MANUAL_CPT" {
+			if hasNonNilBid || (hasNilBid && create) {
+				return errors.New("campaign MANUAL_CPT must not include bid")
+			}
+			return nil
+		}
+		if strategyType == "MAX_CONVERSIONS" && !hasNonNilBid {
+			return errors.New("campaign MAX_CONVERSIONS requires a positive bid")
+		}
+		if strategyType == "" && !hasNonNilBid {
+			return errors.New("bidStrategy update requires a type and goal pair or a bid")
+		}
+		if hasNonNilBid {
+			return validateMoneyField(strategy, "bid", true)
+		}
+		return nil
+	}
+	if create && strategyType == "MANUAL_CPT" && !hasNonNilBid {
 		return errors.New("MANUAL_CPT creation requires a positive bid")
 	}
-	if strategyType == "" && !hasBid {
+	if strategyType == "" && !hasNonNilBid {
 		return errors.New("bidStrategy update requires a type and goal pair or a bid")
 	}
-	if hasBid {
+	if hasNilBid {
+		return errors.New("bid must contain amount and currency")
+	}
+	if hasNonNilBid {
 		if err := validateMoneyField(strategy, "bid", create || strategyType != "MAX_CONVERSIONS"); err != nil {
 			return err
 		}
-		bid := strategy["bid"].(map[string]any)
+		bid := bidVal.(map[string]any)
 		amount, ok := new(big.Rat).SetString(stringField(bid, "amount"))
 		if !ok || amount.Sign() < 0 {
 			return errors.New("bid must not be negative")
@@ -595,18 +618,27 @@ func mutationWarnings(payload map[string]any) []operations.OperationWarning {
 	return warnings
 }
 
-func effectiveBidStrategy(current, requested map[string]any) (map[string]any, error) {
+func effectiveBidStrategy(resource string, current, requested map[string]any) (map[string]any, error) {
 	strategy := cloneObject(current)
 	if strategy == nil {
 		strategy = map[string]any{}
 	}
 	for key, value := range requested {
+		if key == "bid" && value == nil {
+			delete(strategy, "bid")
+			continue
+		}
 		strategy[key] = value
+	}
+	if resource == "campaigns" && stringField(requested, "bidStrategyType") == "MANUAL_CPT" {
+		if bidVal, exists := requested["bid"]; !exists || bidVal == nil {
+			delete(strategy, "bid")
+		}
 	}
 	if stringField(strategy, "bidStrategyType") == "" || stringField(strategy, "bidStrategyGoal") == "" {
 		return nil, errors.New("current bid strategy type and goal are required for a partial update")
 	}
-	if err := validateBidStrategy(strategy); err != nil {
+	if err := validateBidStrategyForOperation(resource, strategy, false, false); err != nil {
 		return nil, err
 	}
 	return strategy, nil
@@ -617,7 +649,7 @@ func validateCampaignStrategyContext(campaign, requested map[string]any) error {
 		return errors.New("bid strategies require an APPSTORE_APP campaign")
 	}
 	current, _ := campaign["bidStrategy"].(map[string]any)
-	strategy, err := effectiveBidStrategy(current, requested)
+	strategy, err := effectiveBidStrategy("campaigns", current, requested)
 	if err != nil {
 		return err
 	}
@@ -653,7 +685,7 @@ func validateAdGroupStrategyContext(campaign, adGroup, requested map[string]any,
 	if current == nil || create {
 		current = parent
 	}
-	strategy, err := effectiveBidStrategy(current, requested)
+	strategy, err := effectiveBidStrategy("adgroups", current, requested)
 	if err != nil {
 		return err
 	}

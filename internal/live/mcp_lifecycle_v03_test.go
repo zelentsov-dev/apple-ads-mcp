@@ -110,7 +110,7 @@ func createV03Campaign(t *testing.T, ctx context.Context, session *mcp.ClientSes
 	return createV03CampaignForPlacement(t, ctx, session, profile, accountID, adamID, storefront, currency, dailyBudget, defaultBid, name, "APPSTORE_SEARCH_RESULTS")
 }
 
-func createV03CampaignForPlacement(t *testing.T, ctx context.Context, session *mcp.ClientSession, profile, accountID, adamID, storefront, currency, dailyBudget, defaultBid, name, placement string) string {
+func createV03CampaignForPlacement(t *testing.T, ctx context.Context, session *mcp.ClientSession, profile, accountID, adamID, storefront, currency, dailyBudget, _ string, name, placement string) string {
 	t.Helper()
 	if existing := findResourceIDByField(callTool(t, ctx, session, "campaigns_query", map[string]any{
 		"profile": profile, "adAccountId": accountID,
@@ -128,7 +128,7 @@ func createV03CampaignForPlacement(t *testing.T, ctx context.Context, session *m
 				"supplyPlacement": map[string]any{"include": []string{placement}},
 				"countryOrRegion": map[string]any{"include": []string{storefront}},
 			},
-			"bidStrategy": map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": map[string]any{"amount": defaultBid, "currency": currency}},
+			"bidStrategy": map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP"},
 		},
 	})
 }

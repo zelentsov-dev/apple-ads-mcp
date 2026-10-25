@@ -234,4 +234,86 @@ func TestMCPStrategySchemaPairsAndDeprecatedCap(t *testing.T) {
 			}
 		}
 	}
+	for _, test := range []struct {
+		name     string
+		strategy map[string]any
+		valid    bool
+	}{
+		{"manual_without_bid", map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP"}, true},
+		{"manual_with_bid_rejected", map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": map[string]any{"amount": "4.00", "currency": "USD"}}, false},
+		{"auto_with_positive_bid", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL", "bid": map[string]any{"amount": "4.00", "currency": "USD"}}, true},
+		{"auto_without_bid_rejected", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL"}, false},
+		{"auto_with_zero_bid_rejected", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL", "bid": map[string]any{"amount": "0.00", "currency": "USD"}}, false},
+	} {
+		t.Run("campaign_create_"+test.name, func(t *testing.T) {
+			result := callTool(t, session, "campaign_create_preview", map[string]any{
+				"profile": "test", "adAccountId": "123",
+				"payload": map[string]any{
+					"name": "Fixture", "billingEvent": "TAPS", "promotedObjectType": "APPSTORE_APP", "promotedObjectId": "1234567890", "status": "PAUSED",
+					"dailyBudget": map[string]any{"value": map[string]any{"amount": "10.00", "currency": "USD"}},
+					"targeting": map[string]any{
+						"supplyPlacement": map[string]any{"include": []any{"APPSTORE_SEARCH_RESULTS"}},
+						"countryOrRegion": map[string]any{"include": []any{"US"}},
+					},
+					"bidStrategy": test.strategy,
+				},
+			})
+			if !result.IsError {
+				t.Fatalf("read-only server must reject write preview: %+v", result)
+			}
+			if test.valid {
+				diagnostic, ok := result.StructuredContent.(map[string]any)
+				if !ok || diagnostic["error"].(map[string]any)["type"] != "write_gate_error" {
+					t.Fatalf("valid schema failed: %+v", result)
+				}
+			} else if result.StructuredContent != nil {
+				t.Fatalf("invalid campaign strategy reached handler: %+v", result)
+			}
+		})
+		t.Run("campaign_bid_strategy_"+test.name, func(t *testing.T) {
+			result := callTool(t, session, "campaign_bid_strategy_preview", map[string]any{
+				"profile": "test", "adAccountId": "123", "campaignId": "456", "strategy": test.strategy,
+			})
+			if !result.IsError {
+				t.Fatalf("read-only server must reject write preview: %+v", result)
+			}
+			if test.valid {
+				diagnostic, ok := result.StructuredContent.(map[string]any)
+				if !ok || diagnostic["error"].(map[string]any)["type"] != "write_gate_error" {
+					t.Fatalf("valid schema failed: %+v", result)
+				}
+			} else if result.StructuredContent != nil {
+				t.Fatalf("invalid campaign strategy reached handler: %+v", result)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name     string
+		strategy map[string]any
+		valid    bool
+	}{
+		{"manual_with_bid", map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": map[string]any{"amount": "1.25", "currency": "USD"}}, true},
+		{"manual_without_bid_rejected", map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP"}, false},
+	} {
+		t.Run("ad_group_create_"+test.name, func(t *testing.T) {
+			result := callTool(t, session, "ad_group_create_preview", map[string]any{
+				"profile": "test", "adAccountId": "123",
+				"payload": map[string]any{
+					"name": "Fixture", "campaignId": "456", "pricingModel": "CPT", "startTime": "2026-08-31T12:00:00.000", "status": "PAUSED",
+					"bidStrategy": test.strategy,
+				},
+			})
+			if !result.IsError {
+				t.Fatalf("read-only server must reject write preview: %+v", result)
+			}
+			if test.valid {
+				diagnostic, ok := result.StructuredContent.(map[string]any)
+				if !ok || diagnostic["error"].(map[string]any)["type"] != "write_gate_error" {
+					t.Fatalf("valid schema failed: %+v", result)
+				}
+			} else if result.StructuredContent != nil {
+				t.Fatalf("invalid ad group strategy reached handler: %+v", result)
+			}
+		})
+	}
 }

@@ -24,12 +24,24 @@ func mutationInputSchema[In any](toolName string) *jsonschema.Schema {
 		if !slices.Contains(payload.Required, "bidStrategy") {
 			payload.Required = append(payload.Required, "bidStrategy")
 		}
+		strategy := payload.Properties["bidStrategy"]
+		strategy.Required = []string{"bidStrategyType", "bidStrategyGoal"}
+		applyCampaignStrategySchemaConstraints(strategy)
 	}
-	if toolName == "campaign_create_preview" || toolName == "ad_group_create_preview" {
+	if toolName == "campaign_update_preview" {
+		applyCampaignStrategySchemaConstraints(schema.Properties["payload"].Properties["bidStrategy"])
+	}
+	if toolName == "campaign_bid_strategy_preview" {
+		strategy := schema.Properties["strategy"]
+		strategy.Required = []string{"bidStrategyType", "bidStrategyGoal"}
+		applyCampaignStrategySchemaConstraints(strategy)
+	}
+	if toolName == "ad_group_create_preview" {
 		strategy := schema.Properties["payload"].Properties["bidStrategy"]
 		strategy.Required = []string{"bidStrategyType", "bidStrategyGoal"}
+		setPositiveStrategyBidPattern(strategy)
 		strategy.AllOf = append(strategy.AllOf, &jsonschema.Schema{
-			If: &jsonschema.Schema{Properties: map[string]*jsonschema.Schema{
+			If: &jsonschema.Schema{Required: []string{"bidStrategyType"}, Properties: map[string]*jsonschema.Schema{
 				"bidStrategyType": {Enum: []any{"MANUAL_CPT"}},
 			}},
 			Then: &jsonschema.Schema{Required: []string{"bid"}},
@@ -41,6 +53,38 @@ func mutationInputSchema[In any](toolName string) *jsonschema.Schema {
 		}
 	}
 	return schema
+}
+
+func applyCampaignStrategySchemaConstraints(strategy *jsonschema.Schema) {
+	if strategy == nil {
+		return
+	}
+	setPositiveStrategyBidPattern(strategy)
+	strategy.AllOf = append(strategy.AllOf,
+		&jsonschema.Schema{
+			If: &jsonschema.Schema{Required: []string{"bidStrategyType"}, Properties: map[string]*jsonschema.Schema{
+				"bidStrategyType": {Enum: []any{"MAX_CONVERSIONS"}},
+			}},
+			Then: &jsonschema.Schema{Required: []string{"bid"}},
+		},
+		&jsonschema.Schema{
+			If: &jsonschema.Schema{Required: []string{"bidStrategyType"}, Properties: map[string]*jsonschema.Schema{
+				"bidStrategyType": {Enum: []any{"MANUAL_CPT"}},
+			}},
+			Then: &jsonschema.Schema{Not: &jsonschema.Schema{Required: []string{"bid"}}},
+		},
+	)
+}
+
+func setPositiveStrategyBidPattern(strategy *jsonschema.Schema) {
+	if strategy == nil {
+		return
+	}
+	if bid := strategy.Properties["bid"]; bid != nil {
+		if amount := bid.Properties["amount"]; amount != nil {
+			amount.Pattern = positiveBidAmountPattern
+		}
+	}
 }
 
 func applyMutationSchemaConstraints(schema *jsonschema.Schema, parentName string, inStrategy bool) {

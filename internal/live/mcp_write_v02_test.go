@@ -106,7 +106,7 @@ func TestMCPV02PausedFixtures(t *testing.T) {
 					"supplyPlacement": map[string]any{"include": []string{fixture.placement}},
 					"countryOrRegion": map[string]any{"include": []string{storefront}},
 				},
-				"bidStrategy": map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": map[string]any{"amount": defaultBid, "currency": currency}},
+				"bidStrategy": map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP"},
 			},
 		}
 		campaignID := findResourceIDByField(callTool(t, ctx, session, "campaigns_query", map[string]any{

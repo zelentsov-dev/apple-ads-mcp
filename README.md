@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/zelentsov-dev/apple-ads-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/zelentsov-dev/apple-ads-mcp/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/zelentsov-dev/apple-ads-mcp)](https://github.com/zelentsov-dev/apple-ads-mcp/releases)
-[![Go](https://img.shields.io/badge/Go-1.26.9%2B-00ADD8?logo=go)](go.mod)
+[![Go](https://img.shields.io/badge/Go-1.26.10%2B-00ADD8?logo=go)](go.mod)
 [![License](https://img.shields.io/github/license/zelentsov-dev/apple-ads-mcp)](LICENSE)
 
 Apple Ads MCP is a local-first [Model Context Protocol](https://modelcontextprotocol.io/) server for the [Apple Ads Platform API v1](https://developer.apple.com/documentation/apple-ads-platform-api). It gives Codex, Claude, and other MCP clients typed tools to research, inspect, and safely operate App Store advertising accounts.
@@ -56,7 +56,7 @@ Other useful read-only starters:
 
 ## Current release
 
-`v0.3.7` is the current release. It honors Apple rate-limit timing, validates bid strategies in their campaign and ad-group context, updates report grouping, and deprecates CPA cap without removing existing tools. Explicit strategy requests and optimizer recommendations now have separate history policies. See the [v0.3.7 release and migration notes](docs/MIGRATION-v0.3.7.md).
+`v0.3.8` is the current release. It aligns campaign and ad-group `bidStrategy.bid` schemas and runtime validation with Apple Ads Platform API v1 (`TargetCpa` on campaigns versus default Max CPT on ad groups), explicitly sends `"bid": null` when switching a campaign to `MANUAL_CPT` so Apple clears any prior `TargetCpa`, and normalizes decimal money strings in `operations_verify`. See the [v0.3.8 release and migration notes](docs/MIGRATION-v0.3.8.md).
 
 The v0.3.5 version-final archive naming, formula-scoped trust from v0.3.4, exact-path verification from v0.3.3, and one-command onboarding from v0.3.2 remain intact.
 
@@ -120,11 +120,11 @@ An irreversible delete has five additional gates: `--allow-deletes`, profile `al
 
 ## Release validation
 
-The v0.3.7 release requires the complete compatibility suite, MCP stdio contract tests, unit and HTTP tests, the race detector, static analysis, vulnerability and secret scans, and distribution validation. Cross-platform CI runs on macOS, Linux, and Windows.
+The v0.3.8 release requires the complete compatibility suite, MCP stdio contract tests, unit and HTTP tests, the race detector, static analysis, vulnerability and secret scans, and distribution validation. Cross-platform CI runs on macOS, Linux, and Windows.
 
-This release uses synthetic acceptance only; no live advertising mutations are part of v0.3.7 validation. Runtime confirmation is a separate owner-controlled gate. On 2026-08-31, the v0.3.6 P2 read-only matrix and a separately authorized `PAUSED` targeting-keyword bulk fixture with 2 and 28 items passed against Apple Ads API v1. Both aggregate receipts applied and verified every returned keyword ID directly; the campaign and ad group remained `PAUSED` throughout the write acceptance.
+This release uses synthetic acceptance in CI; runtime confirmation against live Apple Ads API v1 is a separate owner-controlled gate. On 2026-08-31, the v0.3.6 P2 read-only matrix and a separately authorized `PAUSED` targeting-keyword bulk fixture with 2 and 28 items passed against Apple Ads API v1. Both aggregate receipts applied and verified every returned keyword ID directly; the campaign and ad group remained `PAUSED` throughout the write acceptance.
 
-Earlier v0.3.x live acceptance confirmed read-only optimization baselines and plans, `PAUSED` fixture creation and readback, budget/bid/strategy updates, pause/resume, receipt drift checks, item verification, and deletion of disposable campaigns, ad groups, keywords, and negative keywords. All retained fixtures remained `PAUSED` with zero spend. This historical evidence does not prove v0.3.7 live acceptance.
+Earlier v0.3.x live acceptance confirmed read-only optimization baselines and plans, `PAUSED` fixture creation and readback, budget/bid/strategy updates, pause/resume, receipt drift checks, item verification, and deletion of disposable campaigns, ad groups, keywords, and negative keywords. All retained fixtures remained `PAUSED` with zero spend.
 
 Account-dependent paths have an explicit evidence boundary:
 
@@ -164,10 +164,10 @@ Download the archive for your platform from [GitHub Releases](https://github.com
 Apple silicon example:
 
 ```bash
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.7/apple-ads-mcp_darwin_arm64_0.3.7.tar.gz
-curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.7/checksums.txt
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.8/apple-ads-mcp_darwin_arm64_0.3.8.tar.gz
+curl -LO https://github.com/zelentsov-dev/apple-ads-mcp/releases/download/v0.3.8/checksums.txt
 shasum -a 256 -c checksums.txt --ignore-missing
-tar -xzf apple-ads-mcp_darwin_arm64_0.3.7.tar.gz
+tar -xzf apple-ads-mcp_darwin_arm64_0.3.8.tar.gz
 sudo install -m 0755 apple-ads-mcp /usr/local/bin/apple-ads-mcp
 ```
 
@@ -176,7 +176,7 @@ Windows users should verify `checksums.txt`, extract the matching ZIP, and regis
 ### OCI image
 
 ```bash
-docker pull ghcr.io/zelentsov-dev/apple-ads-mcp:0.3.7
+docker pull ghcr.io/zelentsov-dev/apple-ads-mcp:0.3.8
 ```
 
 The image runs `serve --stdio` by default. Mount `accounts.json` and its referenced private key read-only.
@@ -189,7 +189,7 @@ cd apple-ads-mcp
 go build -trimpath -o ./apple-ads-mcp ./cmd/apple-ads-mcp
 ```
 
-Go 1.26.9 or newer is required.
+Go 1.26.10 or newer is required.
 
 ## Apple API setup
 
@@ -392,7 +392,7 @@ The server returns these as bounded structured Apple errors and does not convert
 
 ## Compatibility
 
-v0.3 preserves all v0.2.1 tool names and schemas, then adds optimization, shared-budget mutation, bid-strategy, and lifecycle tools. v0.3.1 adds a required `maxBid` when bid permission is enabled and fail-closed reconciliation rules; see the [v0.3.1 migration notes](docs/MIGRATION-v0.3.1.md). v0.3.2 changes distribution and onboarding only. v0.3.3 switches release verification to the exact tap formula path, v0.3.4 adds formula-scoped trust for Homebrew 6, and v0.3.5 disambiguates Homebrew version detection by placing the semantic version at the end of archive names. v0.3.6 keeps existing tool names and compatible legacy inputs while adding typed aliases, query shortcuts, diagnostics, and stricter required scopes; see the [v0.3.6 notes](docs/MIGRATION-v0.3.6.md). v0.3.7 adds header-aware request pacing, contextual bid validation, report grouping corrections, and persisted preview warnings; see the [v0.3.7 notes](docs/MIGRATION-v0.3.7.md). Older clients should also read the [v0.3 notes](docs/MIGRATION-v0.3.md) and [v0.2 notes](docs/MIGRATION-v0.2.md).
+v0.3 preserves all v0.2.1 tool names and schemas, then adds optimization, shared-budget mutation, bid-strategy, and lifecycle tools. v0.3.1 adds a required `maxBid` when bid permission is enabled and fail-closed reconciliation rules; see the [v0.3.1 migration notes](docs/MIGRATION-v0.3.1.md). v0.3.2 changes distribution and onboarding only. v0.3.3 switches release verification to the exact tap formula path, v0.3.4 adds formula-scoped trust for Homebrew 6, and v0.3.5 disambiguates Homebrew version detection by placing the semantic version at the end of archive names. v0.3.6 keeps existing tool names and compatible legacy inputs while adding typed aliases, query shortcuts, diagnostics, and stricter required scopes; see the [v0.3.6 notes](docs/MIGRATION-v0.3.6.md). v0.3.7 adds header-aware request pacing, contextual bid validation, report grouping corrections, and persisted preview warnings; see the [v0.3.7 notes](docs/MIGRATION-v0.3.7.md). v0.3.8 separates campaign and ad-group `bidStrategy.bid` requirements, clears `TargetCpa` with `"bid": null` when switching campaigns to `MANUAL_CPT`, and normalizes decimal money strings in `operations_verify`; see the [v0.3.8 notes](docs/MIGRATION-v0.3.8.md). Older clients should also read the [v0.3 notes](docs/MIGRATION-v0.3.md) and [v0.2 notes](docs/MIGRATION-v0.2.md).
 
 The public tool schema is not frozen before v1.0. API-family scope and operation status are tracked in the [machine-readable operation matrix](api-contract/operations.json). The official Java client baseline and App Store endpoint inventory are tracked in [upstream-baseline.json](api-contract/upstream-baseline.json).
 

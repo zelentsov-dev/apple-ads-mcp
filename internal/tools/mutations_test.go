@@ -29,13 +29,21 @@ func TestTypedCampaignAndCreativeValidation(t *testing.T) {
 	campaign := map[string]any{
 		"name": "Fixture", "billingEvent": "TAPS", "promotedObjectType": "APPSTORE_APP", "promotedObjectId": "1234567890", "status": "PAUSED",
 		"dailyBudget": map[string]any{"value": map[string]any{"amount": "10.00", "currency": "USD"}},
-		"bidStrategy": map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": map[string]any{"amount": "1.00", "currency": "USD"}},
+		"bidStrategy": map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP"},
 		"targeting": map[string]any{
 			"supplySource":    map[string]any{"include": []any{"APPSTORE"}},
 			"supplyPlacement": map[string]any{"include": []any{"APPSTORE_SEARCH_RESULTS"}},
 			"countryOrRegion": map[string]any{"include": []any{"US"}},
 		},
 	}
+	if err := validateCampaignPayload(campaign, true); err != nil {
+		t.Fatal(err)
+	}
+	campaign["bidStrategy"] = map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": map[string]any{"amount": "1.00", "currency": "USD"}}
+	if err := validateCampaignPayload(campaign, true); err == nil {
+		t.Fatal("expected MANUAL_CPT campaign bid rejection")
+	}
+	campaign["bidStrategy"] = map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL", "bid": map[string]any{"amount": "4.00", "currency": "USD"}}
 	if err := validateCampaignPayload(campaign, true); err != nil {
 		t.Fatal(err)
 	}
@@ -181,6 +189,18 @@ func TestAppStoreBidStrategyValidation(t *testing.T) {
 		if err := validateBidStrategy(strategy); err == nil {
 			t.Fatalf("expected strategy rejection: %#v", strategy)
 		}
+	}
+	if err := validateBidStrategyForOperation("campaigns", map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP"}, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateBidStrategyForOperation("campaigns", map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": map[string]any{"amount": "1.00", "currency": "USD"}}, true, true); err == nil {
+		t.Fatal("expected campaign MANUAL_CPT bid rejection")
+	}
+	if err := validateBidStrategyForOperation("campaigns", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL", "bid": map[string]any{"amount": "1.00", "currency": "USD"}}, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateBidStrategyForOperation("campaigns", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL"}, true, true); err == nil {
+		t.Fatal("expected campaign MAX_CONVERSIONS missing bid rejection")
 	}
 	if err := validateBidStrategy(map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": map[string]any{"amount": "1.00", "currency": "USD"}}); err != nil {
 		t.Fatal(err)

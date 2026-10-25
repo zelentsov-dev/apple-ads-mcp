@@ -268,7 +268,17 @@ func campaignEvidenceFromObject(campaignID string, value any) optimization.Campa
 	if len(placements) == 1 {
 		placement = placements[0]
 	}
-	eligible := validateCampaignStrategyContext(object, map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL"}) == nil
+	currency := strings.ToUpper(stringField(budget, "currency"))
+	if currency == "" {
+		currency = "USD"
+	}
+	probeStrategy := map[string]any{
+		"bidStrategyType": "MAX_CONVERSIONS",
+		"bidStrategyGoal": "INSTALL",
+		"bid":             map[string]any{"amount": "1.00", "currency": currency},
+	}
+	eligible := validateCampaignStrategyContext(object, strategy) == nil &&
+		validateCampaignStrategyContext(object, probeStrategy) == nil
 	return optimization.CampaignEvidence{
 		CampaignID:             campaignID,
 		Name:                   stringField(object, "name"),

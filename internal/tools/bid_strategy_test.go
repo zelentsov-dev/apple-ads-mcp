@@ -17,13 +17,15 @@ import (
 
 func strategyFixture(strategyType string) map[string]any {
 	goal := "TAP"
+	strategy := map[string]any{"bidStrategyType": strategyType, "bidStrategyGoal": goal}
 	if strategyType == "MAX_CONVERSIONS" {
-		goal = "INSTALL"
+		strategy["bidStrategyGoal"] = "INSTALL"
+		strategy["bid"] = map[string]any{"amount": "1.125", "currency": "USD"}
 	}
 	return map[string]any{
 		"id": "100", "name": "Synthetic campaign", "promotedObjectType": "APPSTORE_APP", "billingEvent": "TAPS", "status": "PAUSED",
 		"targeting":   map[string]any{"supplyPlacement": map[string]any{"include": []any{"APPSTORE_SEARCH_RESULTS"}}},
-		"bidStrategy": map[string]any{"bidStrategyType": strategyType, "bidStrategyGoal": goal, "bid": map[string]any{"amount": "1.125", "currency": "USD"}},
+		"bidStrategy": strategy,
 	}
 }
 
@@ -43,25 +45,36 @@ func TestBidStrategyCreateAndUpdateContract(t *testing.T) {
 	bid := map[string]any{"amount": "0.00125", "currency": "USD"}
 	for _, test := range []struct {
 		name                    string
+		resource                string
 		value                   any
 		create, required, valid bool
 	}{
-		{"required campaign", nil, true, true, false},
-		{"inherited group", nil, true, false, true},
-		{"empty object", map[string]any{}, false, false, false},
-		{"type only", map[string]any{"bidStrategyType": "MANUAL_CPT"}, false, false, false},
-		{"goal only", map[string]any{"bidStrategyGoal": "TAP"}, false, false, false},
-		{"wrong pair", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "TAP"}, false, false, false},
-		{"manual creation requires bid", map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP"}, true, true, false},
-		{"manual precision", map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": bid}, true, true, true},
-		{"auto creation ceiling", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL", "bid": bid}, true, true, true},
-		{"auto creation no ceiling", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL"}, true, true, true},
-		{"partial manual bid", map[string]any{"bid": bid}, false, false, true},
-		{"create bid only", map[string]any{"bid": bid}, true, false, false},
-		{"auto creation zero", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL", "bid": map[string]any{"amount": "0", "currency": "USD"}}, true, false, false},
+		{"required campaign", "campaigns", nil, true, true, false},
+		{"inherited group", "adgroups", nil, true, false, true},
+		{"empty object", "adgroups", map[string]any{}, false, false, false},
+		{"type only", "adgroups", map[string]any{"bidStrategyType": "MANUAL_CPT"}, false, false, false},
+		{"goal only", "adgroups", map[string]any{"bidStrategyGoal": "TAP"}, false, false, false},
+		{"wrong pair", "adgroups", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "TAP"}, false, false, false},
+		{"campaign manual creation forbids bid", "campaigns", map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": bid}, true, true, false},
+		{"campaign manual creation forbids nil bid", "campaigns", map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": nil}, true, true, false},
+		{"campaign manual creation without bid", "campaigns", map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP"}, true, true, true},
+		{"campaign manual update allows nil bid reset", "campaigns", map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": nil}, false, false, true},
+		{"campaign manual update forbids non-nil bid", "campaigns", map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": bid}, false, false, false},
+		{"campaign auto creation requires positive bid", "campaigns", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL"}, true, true, false},
+		{"campaign auto creation with positive bid", "campaigns", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL", "bid": bid}, true, true, true},
+		{"campaign auto update requires positive bid", "campaigns", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL"}, false, false, false},
+		{"campaign auto zero bid rejected", "campaigns", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL", "bid": map[string]any{"amount": "0", "currency": "USD"}}, false, false, false},
+		{"adgroup manual creation requires bid", "adgroups", map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP"}, true, true, false},
+		{"adgroup manual precision", "adgroups", map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": bid}, true, true, true},
+		{"adgroup auto creation ceiling", "adgroups", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL", "bid": bid}, true, true, true},
+		{"adgroup auto creation no ceiling", "adgroups", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL"}, true, true, true},
+		{"adgroup partial manual bid", "adgroups", map[string]any{"bid": bid}, false, false, true},
+		{"adgroup create bid only", "adgroups", map[string]any{"bid": bid}, true, false, false},
+		{"adgroup auto creation zero", "adgroups", map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL", "bid": map[string]any{"amount": "0", "currency": "USD"}}, true, false, false},
+		{"adgroup nil bid rejected", "adgroups", map[string]any{"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP", "bid": nil}, false, false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			err := validateBidStrategyForOperation(test.value, test.create, test.required)
+			err := validateBidStrategyForOperation(test.resource, test.value, test.create, test.required)
 			if (err == nil) != test.valid {
 				t.Fatalf("valid=%v err=%v", test.valid, err)
 			}
@@ -104,7 +117,7 @@ func TestExplicitStrategyPreviewNeedsNoHistoricalReadAndPersistsWarnings(t *test
 		service := &Service{manager: manager, allowWrites: true}
 		store := operations.NewStore()
 		account := AccountInput{Profile: "synthetic", AdAccountID: "123"}
-		strategy := BidStrategy{BidStrategyType: "MAX_CONVERSIONS", BidStrategyGoal: "INSTALL"}
+		strategy := BidStrategy{BidStrategyType: "MAX_CONVERSIONS", BidStrategyGoal: "INSTALL", Bid: &appleads.Money{Amount: "2.50", Currency: "USD"}}
 		var output PreviewOutput
 		var err error
 		if specialized {
@@ -123,6 +136,34 @@ func TestExplicitStrategyPreviewNeedsNoHistoricalReadAndPersistsWarnings(t *test
 			if strings.Contains(path, "reports/") {
 				t.Fatalf("unexpected report request %s", path)
 			}
+		}
+	}
+}
+
+func TestCampaignSwitchToManualCPTClearsTargetCPAWithExplicitNullBid(t *testing.T) {
+	for _, specialized := range []bool{false, true} {
+		manager := strategyManager("MAX_CONVERSIONS")
+		service := &Service{manager: manager, allowWrites: true}
+		store := operations.NewStore()
+		account := AccountInput{Profile: "synthetic", AdAccountID: "123"}
+		strategy := BidStrategy{BidStrategyType: "MANUAL_CPT", BidStrategyGoal: "TAP"}
+		var output PreviewOutput
+		var err error
+		if specialized {
+			_, output, err = service.campaignBidStrategyPreview(store)(t.Context(), nil, CampaignBidStrategyPreviewInput{AccountInput: account, CampaignID: "100", Strategy: strategy})
+		} else {
+			_, output, err = typedUpdatePreview[CampaignUpdatePayload](service, store, "campaigns", "campaign_update_preview")(t.Context(), nil, TypedUpdatePreviewInput[CampaignUpdatePayload]{AccountInput: account, ID: "100", Payload: CampaignUpdatePayload{BidStrategy: &strategy}})
+		}
+		if err != nil || output.Error != nil || output.Preview == nil {
+			t.Fatalf("specialized=%v output=%+v err=%v", specialized, output, err)
+		}
+		afterStrategy, ok := output.Preview.After["bidStrategy"].(map[string]any)
+		if !ok {
+			t.Fatalf("after=%#v", output.Preview.After)
+		}
+		bidVal, hasBid := afterStrategy["bid"]
+		if !hasBid || bidVal != nil {
+			t.Fatalf("expected explicit nil bid to clear TargetCpa, got hasBid=%v bidVal=%#v", hasBid, bidVal)
 		}
 	}
 }
@@ -190,7 +231,7 @@ func TestCampaignStrategyValidatesFinalTargeting(t *testing.T) {
 		service := &Service{manager: manager, allowWrites: true}
 		payload := map[string]any{"targeting": map[string]any{"supplyPlacement": map[string]any{"include": []any{"APPSTORE_SEARCH_TAB"}}}}
 		if withStrategy {
-			payload["bidStrategy"] = map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL"}
+			payload["bidStrategy"] = map[string]any{"bidStrategyType": "MAX_CONVERSIONS", "bidStrategyGoal": "INSTALL", "bid": map[string]any{"amount": "1.50", "currency": "USD"}}
 		}
 		_, _, err := service.bidStrategyEvidence(t.Context(), AccountInput{Profile: "synthetic", AdAccountID: "123"}, "campaigns", "100", payload, false)
 		if err == nil || !strings.Contains(err.Error(), "APPSTORE_SEARCH_RESULTS") {

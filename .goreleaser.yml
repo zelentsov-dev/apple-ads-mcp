@@ -54,15 +54,11 @@ release:
   mode: replace
   make_latest: true
   header: |
-    Apple Ads MCP {{ .Tag }} honors Apple rate-limit headers and Retry-After without shortening the required wait. Concurrent reads share a bounded per-profile cooldown; writes blocked before dispatch are distinguished from ambiguous writes and are never automatically retried.
+    Apple Ads MCP {{ .Tag }} aligns campaign and ad-group bid-strategy contracts with live Apple Ads Platform API v1 behavior: campaign MANUAL_CPT + TAP forbids bidStrategy.bid (TargetCpa must be null), campaign MAX_CONVERSIONS + INSTALL requires a positive bidStrategy.bid (TargetCpa), and ad-group MANUAL_CPT + TAP creation requires a positive default Max CPT bid.
 
-    Bid strategies now validate the matching type and goal, creation versus update rules, account currency, placement, and parent campaign state. Explicit strategy requests do not require optimizer history minimums; conservative optimizer thresholds remain intact. Preview warnings persist with their receipt.
+    Switching an existing campaign to MANUAL_CPT now explicitly sends "bid": null in PUT /v1/campaigns/{id} so Apple clears any previous TargetCpa instead of retaining it via partial object merge.
 
-    Reports reject the retired storefront grouping with a countryOrRegion migration hint and preserve date strings. CPA cap remains available for compatibility, with deprecation annotations and warnings. Tool names remain unchanged. See docs/MIGRATION-v0.3.7.md for compatibility details.
-
-    The build baseline is Go 1.26.9, including the pinned Docker builder, to incorporate standard-library security fixes.
-
-    Validation uses synthetic data and cross-platform CI. This release does not claim live mutation acceptance and does not change advertising campaigns.
+    Receipt verification normalizes decimal money amounts (for example "4.00" versus Apple's readback "4") and null-reset fields in operations_verify. The build baseline is Go 1.26.10, including the pinned Docker builder, to incorporate standard-library security fixes. Tool names remain unchanged. See docs/MIGRATION-v0.3.8.md for compatibility details.
   footer: |
     Archives include SHA-256 checksums and SPDX SBOMs. See the README for installation, Apple Ads onboarding, safety controls, and known platform behavior.
 

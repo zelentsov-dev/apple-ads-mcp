@@ -5,7 +5,7 @@ go 1.26.10
 require (
 	github.com/google/jsonschema-go v0.4.3
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	golang.org/x/sys v0.47.0
 )
 

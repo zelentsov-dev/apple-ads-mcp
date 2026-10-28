@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     strategy:
@@ -39,12 +43,81 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go test -race ./...
-      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
-      - run: go run github.com/zricethezav/gitleaks/v8@v8.29.1 dir --no-banner --redact .
-      - run: go run github.com/goreleaser/goreleaser/v2@v2.17.1 check
-      - run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-      - run: npx --yes markdownlint-cli2@0.23.2 '**/*.md'
-      - run: python3 scripts/validate_distribution.py
+      - name: Cache CI tool binaries
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/apple-ads-ci-tools/bin
+          key: ${{ runner.os }}-ci-tools-govulncheck-1.7.0-gitleaks-8.29.1-goreleaser-2.17.1-actionlint-1.7.12-v1-${{ hashFiles('go.mod', 'go.sum') }}
+      - name: Install CI tool binaries
+        env:
+          TOOLS_STAMP: govulncheck-1.7.0-gitleaks-8.29.1-goreleaser-2.17.1-actionlint-1.7.12-v1-${{ hashFiles('go.mod', 'go.sum') }}
+        run: |
+          set -euo pipefail
+          TOOLS_BIN="$HOME/.cache/apple-ads-ci-tools/bin"
+          STAMP_FILE="$TOOLS_BIN/.tools-stamp"
+          if [[ ! -f "$STAMP_FILE" ]] || [[ "$(cat "$STAMP_FILE")" != "$TOOLS_STAMP" ]] || \
+             [[ ! -x "$TOOLS_BIN/govulncheck" ]] || [[ ! -x "$TOOLS_BIN/gitleaks" ]] || \
+             [[ ! -x "$TOOLS_BIN/goreleaser" ]] || [[ ! -x "$TOOLS_BIN/actionlint" ]]; then
+            rm -rf "$TOOLS_BIN"
+            mkdir -p "$TOOLS_BIN"
+            export GOBIN="$TOOLS_BIN"
+            export GOCACHE="$RUNNER_TEMP/ci-tools-gocache"
+            pids=()
+            go install golang.org/x/vuln/cmd/govulncheck@v1.7.0 &
+            pids+=($!)
+            go install github.com/zricethezav/gitleaks/v8@v8.29.1 &
+            pids+=($!)
+            go install github.com/goreleaser/goreleaser/v2@v2.17.1 &
+            pids+=($!)
+            go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 &
+            pids+=($!)
+            for pid in "${pids[@]}"; do
+              wait "$pid"
+            done
+            rm -rf "$GOCACHE"
+            printf '%s' "$TOOLS_STAMP" > "$STAMP_FILE"
+          fi
+          echo "$TOOLS_BIN" >> "$GITHUB_PATH"
+      - name: Run parallel quality and contract checks
+        run: |
+          set -euo pipefail
+          LOG_DIR="$RUNNER_TEMP/ci-check-logs"
+          mkdir -p "$LOG_DIR"
+          names=(
+            govulncheck
+            gitleaks
+            goreleaser
+            actionlint
+            markdownlint
+            validate-distribution
+          )
+          pids=()
+          govulncheck ./... >"$LOG_DIR/govulncheck.log" 2>&1 &
+          pids+=($!)
+          gitleaks dir --no-banner --redact . >"$LOG_DIR/gitleaks.log" 2>&1 &
+          pids+=($!)
+          goreleaser check >"$LOG_DIR/goreleaser.log" 2>&1 &
+          pids+=($!)
+          actionlint >"$LOG_DIR/actionlint.log" 2>&1 &
+          pids+=($!)
+          npx --yes markdownlint-cli2@0.23.2 '**/*.md' >"$LOG_DIR/markdownlint.log" 2>&1 &
+          pids+=($!)
+          python3 scripts/validate_distribution.py >"$LOG_DIR/validate-distribution.log" 2>&1 &
+          pids+=($!)
+          failed=0
+          for i in "${!pids[@]}"; do
+            name="${names[$i]}"
+            if wait "${pids[$i]}"; then
+              echo "::group::[PASS] $name"
+              cat "$LOG_DIR/$name.log"
+              echo "::endgroup::"
+            else
+              echo "::error::$name check failed"
+              cat "$LOG_DIR/$name.log"
+              failed=1
+            fi
+          done
+          exit "$failed"
 
   live-read-only:
     if: github.event_name == 'workflow_dispatch' && github.ref_name == github.event.repository.default_branch

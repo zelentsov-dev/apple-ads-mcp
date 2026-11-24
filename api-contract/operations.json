@@ -126,7 +126,13 @@
     },
     {
       "area": "deferred-mutations",
-      "paths": ["POST|PUT /ad-accounts", "delegation mutations", "CONTENT_PROVIDER mutations"],
+      "paths": [
+        "POST|PUT /ad-accounts",
+        "POST /keywords/bulk-delete",
+        "POST /negative-keywords/bulk-delete",
+        "delegation mutations",
+        "CONTENT_PROVIDER mutations"
+      ],
       "classification": "mutation",
       "status": "not-exposed"
     }

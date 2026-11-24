@@ -39,7 +39,7 @@ def main() -> None:
     require(registry["version"] == version, "registry version mismatch")
     require(registry["packages"][0]["identifier"].endswith(f":v{version}"), "registry package version mismatch")
     require(operations["productVersion"] == version, "operation matrix version mismatch")
-    require(upstream["javaClientVersion"] == "v1.109.0", "unexpected Apple Java client baseline")
+    require(upstream["javaClientVersion"] == "v1.117.1", "unexpected Apple Java client baseline")
     require(f'var Version = "{version}"' in server, "server version mismatch")
     require(f"ARG VERSION={version}" in dockerfile, "Docker default version mismatch")
     require(f"`v{version}` is the current release" in readme, "README release status mismatch")

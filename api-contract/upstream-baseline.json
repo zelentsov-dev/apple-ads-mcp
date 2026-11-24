@@ -1,6 +1,6 @@
 {
   "source": "https://github.com/apple/apple-ads-platform-api-java",
-  "javaClientVersion": "v1.109.0",
+  "javaClientVersion": "v1.117.1",
   "apiInterface": "src/main/java/com/apple/ads/api/AppleAdsApi.java",
   "appStoreEndpoints": [
     "GET /acls",
@@ -38,11 +38,13 @@
     "POST /insights/apps/search-term-popularity/query",
     "POST /keywords",
     "POST /keywords/bulk-create",
+    "POST /keywords/bulk-delete",
     "POST /keywords/bulk-update",
     "POST /keywords/query",
     "POST /metadata/apps/supported-languages/query",
     "POST /negative-keywords",
     "POST /negative-keywords/bulk-create",
+    "POST /negative-keywords/bulk-delete",
     "POST /negative-keywords/bulk-update",
     "POST /negative-keywords/query",
     "POST /product-pages/locale-details/query",

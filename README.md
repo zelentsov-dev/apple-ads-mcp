@@ -2,8 +2,9 @@
 
 [![CI](https://github.com/zelentsov-dev/apple-ads-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/zelentsov-dev/apple-ads-mcp/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/zelentsov-dev/apple-ads-mcp)](https://github.com/zelentsov-dev/apple-ads-mcp/releases)
-[![Go](https://img.shields.io/badge/Go-1.26.10%2B-00ADD8?logo=go)](go.mod)
+[![Go](https://img.shields.io/badge/Go-1.26.11%2B-00ADD8?logo=go)](go.mod)
 [![License](https://img.shields.io/github/license/zelentsov-dev/apple-ads-mcp)](LICENSE)
+[![zelentsov-dev/apple-ads-mcp MCP server](https://glama.ai/mcp/servers/zelentsov-dev/apple-ads-mcp/badges/score.svg)](https://glama.ai/mcp/servers/zelentsov-dev/apple-ads-mcp)
 
 Apple Ads MCP is a local-first [Model Context Protocol](https://modelcontextprotocol.io/) server for the [Apple Ads Platform API v1](https://developer.apple.com/documentation/apple-ads-platform-api). It gives Codex, Claude, and other MCP clients typed tools to research, inspect, and safely operate App Store advertising accounts.
 
@@ -189,7 +190,7 @@ cd apple-ads-mcp
 go build -trimpath -o ./apple-ads-mcp ./cmd/apple-ads-mcp
 ```
 
-Go 1.26.10 or newer is required.
+Go 1.26.11 or newer is required.
 
 ## Apple API setup
 
